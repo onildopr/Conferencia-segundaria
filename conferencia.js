@@ -160,7 +160,7 @@ $('#extract-btn').click(() => {
     return;
   }
   ConferenciaApp.ids.clear();
-  const idsEncontrados = [...html.matchAll(/44\d{9}/g)].map(m => m[0]);
+  const idsEncontrados = [...html.matchAll(/4[45]\d{9}/g)].map(m => m[0]);
   if (idsEncontrados.length === 0) {
     ConferenciaApp.alertar('Nenhum ID válido encontrado.');
     return;
