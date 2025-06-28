@@ -160,7 +160,13 @@ $('#extract-btn').click(() => {
     return;
   }
   ConferenciaApp.ids.clear();
-  const idsEncontrados = [...html.matchAll(/4[45]\d{9}/g)].map(m => m[0]);
+  const idsEncontrados = [...html.matchAll(/"id":"(4\d{10})"/g)].map(m => m[1]);
+  const regexRoute = /"routeId":(\d+)/;
+  const routeMatch = regexRoute.exec(html);
+  if (routeMatch) {
+    routeId = routeMatch[1];
+    $('#route-title').text(`Conferência da rota: ${routeId}`);
+  }
   if (idsEncontrados.length === 0) {
     ConferenciaApp.alertar('Nenhum ID válido encontrado.');
     return;
@@ -232,4 +238,3 @@ $('#back-btn').click(() => location.reload());
 $('#export-txt').click(() => ConferenciaApp.gerarRelatorioTxt());
 $('#export-csv').click(() => ConferenciaApp.gerarRelatorioCsv());
 $('#export-pdf').click(() => ConferenciaApp.gerarRelatorioPdf());
-
