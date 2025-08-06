@@ -1,6 +1,7 @@
 const { jsPDF } = window.jspdf;
 
 const ConferenciaApp = {
+  timestamps: new Map(), // ID => data/hora conferido
   ids: new Set(),
   conferidos: new Set(),
   faltantes: new Set(),
@@ -8,6 +9,7 @@ const ConferenciaApp = {
   totalConferidos: 0,
   routeId: '',
   startTime: null,
+  viaCsv: false, // flag para controlar conferência via CSV
 
   alertar(mensagem) {
     alert(mensagem);
@@ -20,28 +22,95 @@ const ConferenciaApp = {
   },
 
   atualizarListas() {
-    $('#conferidos-list').html(`<h6>Conferidos (<span class='badge badge-success'>${this.conferidos.size}</span>)</h6>` + Array.from(this.conferidos).map(id => `<li class='list-group-item list-group-item-success'>${id}</li>`).join(''));
-    $('#faltantes-list').html(`<h6>Faltantes (<span class='badge badge-danger'>${this.ids.size}</span>)</h6>` + Array.from(this.ids).map(id => `<li class='list-group-item list-group-item-danger'>${id}</li>`).join(''));
-    $('#fora-rota-list').html(`<h6>Fora de Rota (<span class='badge badge-warning'>${this.foraDeRota.size}</span>)</h6>` + Array.from(this.foraDeRota).map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`).join(''));
+    $('#conferidos-list').html(
+      `<h6>Conferidos (<span class='badge badge-success'>${this.conferidos.size}</span>)</h6>` +
+      Array.from(this.conferidos)
+        .map(id => `<li class='list-group-item list-group-item-success'>${id}</li>`)
+        .join('')
+    );
+    $('#faltantes-list').html(
+      `<h6>Faltantes (<span class='badge badge-danger'>${this.ids.size}</span>)</h6>` +
+      Array.from(this.ids)
+        .map(id => `<li class='list-group-item list-group-item-danger'>${id}</li>`)
+        .join('')
+    );
+    $('#fora-rota-list').html(
+      `<h6>Fora de Rota (<span class='badge badge-warning'>${this.foraDeRota.size}</span>)</h6>` +
+      Array.from(this.foraDeRota)
+        .map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`)
+        .join('')
+    );
     $('#verified-total').text(this.conferidos.size);
     this.atualizarProgresso();
   },
 
-  conferirId(codigo) {
-    if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
-      return;
+conferirId(codigo) {
+  if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
+    return;
+  }
+
+  const dataHora = new Date().toLocaleString(); // data e hora local
+
+  if (this.ids.has(codigo)) {
+    this.ids.delete(codigo);
+    this.conferidos.add(codigo);
+    this.timestamps.set(codigo, dataHora);
+  } else {
+    this.foraDeRota.add(codigo);
+    this.timestamps.set(codigo, dataHora);
+
+    // 🔊 Tocar som se não for conferência via CSV
+    if (!this.viaCsv) {
+      const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
+      audio.play();
     }
-    if (this.ids.has(codigo)) {
-      this.ids.delete(codigo);
-      this.conferidos.add(codigo);
-    } else {
-      this.foraDeRota.add(codigo);
-    }
-    $('#barcode-input').val('').focus();
-    this.atualizarListas();
-  },
+  }
+
+  $('#barcode-input').val('').focus();
+  this.atualizarListas();
+},
+
+
+  // Nova função: gera CSV com coluna TEXT para conferidos e fora de rota
+// Gera CSV só com IDs numéricos, sem header extra, e CRLF
+gerarCsvText() {
+  const all = [...this.conferidos, ...this.foraDeRota];
+  const valid = all.filter(id => /^\d+$/.test(id.trim()));
+
+  if (valid.length === 0) {
+    alert('Não há IDs numéricos para exportar.');
+    return;
+  }
+
+  const lines = [
+    'DATA/HORA,ID', // Cabeçalho
+    ...valid.map(id => {
+      const dataHora = this.timestamps.get(id) || '';
+      return `"${dataHora}","${id}"`;
+    })
+  ];
+
+  const conteudo = lines.join('\r\n');
+
+  const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+
+  // Gera nome do arquivo no formato <cluster>_<routeId>.csv
+  const cluster = this.cluster || 'semCluster';
+  const rota = this.routeId || 'semRota';
+  const nomeArquivo = `${cluster}_${rota}.csv`;
+
+  link.download = nomeArquivo;
+  link.click();
+},
+
+
+
 
   finalizar() {
+    // gera o CSV ao finalizar a conferência
+    this.gerarCsvText();
     $('#reportModal').modal('show');
   },
 
@@ -65,9 +134,9 @@ const ConferenciaApp = {
 
   gerarRelatorioCsv() {
     let conteudo = 'Categoria,ID\n';
-    this.conferidos.forEach(id => conteudo += `Conferido,${id}\n`);
-    this.ids.forEach(id => conteudo += `Faltante,${id}\n`);
-    this.foraDeRota.forEach(id => conteudo += `Fora de Rota,${id}\n`);
+    this.conferidos.forEach(id => (conteudo += `Conferido,${id}\n`));
+    this.ids.forEach(id => (conteudo += `Faltante,${id}\n`));
+    this.foraDeRota.forEach(id => (conteudo += `Fora de Rota,${id}\n`));
     const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -121,37 +190,39 @@ $('#manual-btn').click(() => {
   $('#manual-interface').removeClass('d-none');
 });
 
-    // Submissão de IDs manuais
-    $('#submit-ids').click(function () {
-        try {
-          let manualIds = $('#manual-ids').val().split(/[\s,]+/).map(id => id.trim());
-          manualIds.forEach(id => {
-            if (id) idsSet.add(id);
-          });
-  
-          const idsArray = Array.from(idsSet);
-          if (idsArray.length === 0) {
-            alert('Nenhum ID válido inserido.');
-            return;
-          }
-  
-          let resultadoHTML = "";
-          idsArray.forEach(id => {
-            resultadoHTML += `<li id="id-${id}" class="list-group-item">${id} <span class="badge badge-secondary">Pendente</span></li>`;
-          });
-  
-          $('#results').html(resultadoHTML);
-          $('#total-extracted').text(idsArray.length);
-          $('#manual-interface').addClass('d-none');
-          $('#new-interface').removeClass('d-none');
-        } catch (error) {
-          alert('Ocorreu um erro ao processar os dados. Tente novamente.');
-          console.error(error);
-        }
-      });
-  
+// Submissão de IDs manuais
+$('#submit-ids').click(function () {
+  try {
+    let manualIds = $('#manual-ids')
+      .val()
+      .split(/[\s,]+/)
+      .map(id => id.trim());
+    manualIds.forEach(id => {
+      if (id) idsSet.add(id);
+    });
 
-// Eventos dos botões
+    const idsArray = Array.from(idsSet);
+    if (idsArray.length === 0) {
+      alert('Nenhum ID válido inserido.');
+      return;
+    }
+
+    let resultadoHTML = "";
+    idsArray.forEach(id => {
+      resultadoHTML += `<li id="id-${id}" class="list-group-item">${id} <span class="badge badge-secondary">Pendente</span></li>`;
+    });
+
+    $('#results').html(resultadoHTML);
+    $('#total-extracted').text(idsArray.length);
+    $('#manual-interface').addClass('d-none');
+    $('#new-interface').removeClass('d-none');
+  } catch (error) {
+    alert('Ocorreu um erro ao processar os dados. Tente novamente.');
+    console.error(error);
+  }
+});
+
+// Extração de IDs via HTML
 $('#extract-btn').click(() => {
   let html = $('#html-input').val();
   html = html.replace(/<[^>]+>/g, ' ');
@@ -164,23 +235,65 @@ $('#extract-btn').click(() => {
   const regexRoute = /"routeId":(\d+)/;
   const routeMatch = regexRoute.exec(html);
   if (routeMatch) {
-    routeId = routeMatch[1];
-    $('#route-title').text(`Conferência da rota: ${routeId}`);
+    ConferenciaApp.routeId = routeMatch[1];
+    $('#route-title').text(`Conferência da rota: ${ConferenciaApp.routeId}`);
   }
   if (idsEncontrados.length === 0) {
     ConferenciaApp.alertar('Nenhum ID válido encontrado.');
     return;
   }
+  const regexFacility = /"destinationFacilityId":"([^"]+)","name":"([^"]+)"/;
+  const facMatch = regexFacility.exec(html);
+
+  if (!facMatch) {
+  ConferenciaApp.alertar('Nenhuma facility encontrada.');
+  } 
+  else {
+  const destId   = facMatch[1];    // ex: “ETO2”
+  const facName  = facMatch[2];    // ex: “Araguaína”
+  ConferenciaApp.destinationFacilityId   = destId;
+  ConferenciaApp.destinationFacilityName = facName;
+
+  // exiba onde quiser (certifique-se de criar estes elementos no HTML):
+  $('#destination-facility-title').html(`<strong>XPT:</strong> ${destId}`);
+  $('#destination-facility-name').html(`<strong>DESTINO:</strong> ${facName}`);
+}
   idsEncontrados.forEach(id => ConferenciaApp.ids.add(id));
-  $('#route-title').text(`Conferência de IDs`);
+  $('#route-title').html(`ROTA: <strong>${ConferenciaApp.routeId}</strong><br> CONFERENCIA DE ID's`);
   $('#extracted-total').text(ConferenciaApp.ids.size);
   $('#initial-interface').addClass('d-none');
   $('#conference-interface').removeClass('d-none');
   ConferenciaApp.atualizarListas();
+  // depois de fazer html = html.replace(/<[^>]+>/g, ' ')
+  const regexCluster = /"cluster":"([^"]+)"/g;
+  const clusters = [...html.matchAll(regexCluster)].map(m => m[1]);
+
+  if (clusters.length === 0) {
+    ConferenciaApp.alertar('Nenhum cluster encontrado.');
+  } else {
+  // Se você só espera um cluster:
+  const cluster = clusters[0];
+  console.log('Cluster extraído:', cluster);
+  // Ou guarde em alguma propriedade:
+  ConferenciaApp.cluster = cluster;
+  $('#cluster-title').html(`
+  <span style="font-size:1.0em;">
+    CLUSTER:
+  </span style="font-size:1.0em">
+  <strong style="font-size:1.0em;">
+    ${cluster}
+  </strong>
+`);
+  }
+
 });
 
+// Submissão de IDs manuais na nova interface
 $('#submit-manual').click(() => {
-  const idsManuais = $('#manual-input').val().split(/\s|,+/).filter(id => /^4\d{10}$/.test(id.trim()));
+  const idsManuais = $('#manual-input')
+    .val()
+    .split(/\s|,+/)
+    .filter(id => /^4\d{10}$/.test(id.trim()));
   idsManuais.forEach(id => ConferenciaApp.ids.add(id));
   if (!ConferenciaApp.ids.size) {
     ConferenciaApp.alertar('Nenhum ID válido inserido.');
@@ -193,16 +306,24 @@ $('#submit-manual').click(() => {
   ConferenciaApp.atualizarListas();
 });
 
+// Entrada de código de barras manual
 $('#barcode-input').keypress(e => {
-  if (e.which === 13) ConferenciaApp.conferirId($('#barcode-input').val().trim());
+  if (e.which === 13) {
+    ConferenciaApp.viaCsv = false; // garantir que não é CSV
+    ConferenciaApp.conferirId($('#barcode-input').val().trim());
+  }
 });
 
+// Processamento de CSV
 $('#check-csv').click(() => {
   const fileInput = document.getElementById('csv-input');
   if (fileInput.files.length === 0) {
     ConferenciaApp.alertar('Selecione um arquivo CSV.');
     return;
   }
+
+  ConferenciaApp.viaCsv = true; // sinalizar conferência via CSV
+
   const file = fileInput.files[0];
   const reader = new FileReader();
   reader.onload = function(e) {
@@ -221,18 +342,22 @@ $('#check-csv').click(() => {
     for (let i = 1; i < linhas.length; i++) {
       const colunas = linhas[i].split(',');
       if (colunas.length <= textCol) continue;
-      let campo = colunas[textCol].trim().replace(/^"|"$/g, '').replace(/""/g, '"');
+      let campo = colunas[textCol]
+        .trim()
+        .replace(/^"|"$/g, '')
+        .replace(/""/g, '"');
       const match = campo.match(/(4\d{10})/);
       if (match) {
-        const csvId = match[1];
-        ConferenciaApp.conferirId(csvId);
+        ConferenciaApp.conferirId(match[1]);
       }
     }
     ConferenciaApp.atualizarListas();
+    ConferenciaApp.viaCsv = false; // resetar flag CSV
   };
   reader.readAsText(file, 'UTF-8');
 });
 
+// Botões finais de relatório e navegação
 $('#finish-btn').click(() => ConferenciaApp.finalizar());
 $('#back-btn').click(() => location.reload());
 $('#export-txt').click(() => ConferenciaApp.gerarRelatorioTxt());
