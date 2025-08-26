@@ -10,6 +10,39 @@ const ConferenciaApp = {
   routeId: '',
   startTime: null,
   viaCsv: false, // flag para controlar conferência via CSV
+  /**
+   * Contagem de IDs que foram lidos mais de uma vez.
+   * Essas informações s o  teis para detectar se o scanner
+   * leu um c digo mais de uma vez devido a um erro.
+   * @type {Map<string,number>}
+   */
+  duplicados: new Map(), // ID => contagem de repeti es além da 1ª leitura
+
+  /**
+   * Registra um c digo como duplicado.
+   * @param {string} codigo
+   */
+  registrarDuplicado(codigo) {
+    const atual = this.duplicados.get(codigo) || 0;
+    this.duplicados.set(codigo, atual + 1);
+  },
+  /**
+   * Toca um alerta de som.
+   * @param {boolean} viaCsv - Flag para indicar se a confer ncia est  sendo feita via CSV.
+   */
+  tocarAlerta(viaCsv = false) {
+    if (!viaCsv) {
+      try {
+        // Cria um objeto de  udio com o som de alerta
+        const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
+        // Toca o som de alerta
+        audio.play();
+      } catch (e) {
+        // Silencia erro de autoplay em alguns navegadores
+      }
+    }
+  },
+
 
   alertar(mensagem) {
     alert(mensagem);
@@ -21,45 +54,86 @@ const ConferenciaApp = {
     $('#progress-bar').css('width', percentual + '%').text(Math.floor(percentual) + '%');
   },
 
-  atualizarListas() {
-    $('#conferidos-list').html(
-      `<h6>Conferidos (<span class='badge badge-success'>${this.conferidos.size}</span>)</h6>` +
-      Array.from(this.conferidos)
-        .map(id => `<li class='list-group-item list-group-item-success'>${id}</li>`)
-        .join('')
-    );
-    $('#faltantes-list').html(
-      `<h6>Faltantes (<span class='badge badge-danger'>${this.ids.size}</span>)</h6>` +
-      Array.from(this.ids)
-        .map(id => `<li class='list-group-item list-group-item-danger'>${id}</li>`)
-        .join('')
-    );
-    $('#fora-rota-list').html(
-      `<h6>Fora de Rota (<span class='badge badge-warning'>${this.foraDeRota.size}</span>)</h6>` +
-      Array.from(this.foraDeRota)
-        .map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`)
-        .join('')
-    );
-    $('#verified-total').text(this.conferidos.size);
-    this.atualizarProgresso();
-  },
+atualizarListas() {
+  // Conferidos
+  $('#conferidos-list').html(
+    `<h6>Conferidos (<span class='badge badge-success'>${this.conferidos.size}</span>)</h6>` +
+    Array.from(this.conferidos)
+      .map(id => `<li class='list-group-item list-group-item-success'>${id}</li>`)
+      .join('')
+  );
+
+  // Faltantes (restantes a conferir)
+  $('#faltantes-list').html(
+    `<h6>Faltantes (<span class='badge badge-danger'>${this.ids.size}</span>)</h6>` +
+    Array.from(this.ids)
+      .map(id => `<li class='list-group-item list-group-item-danger'>${id}</li>`)
+      .join('')
+  );
+
+  // Fora de rota
+  $('#fora-rota-list').html(
+    `<h6>Fora de Rota (<span class='badge badge-warning'>${this.foraDeRota.size}</span>)</h6>` +
+    Array.from(this.foraDeRota)
+      .map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`)
+      .join('')
+  );
+
+  // 🔶 Duplicados (laranja)
+  const totalDuplicadosUnicos = this.duplicados.size;
+  const duplicadosHTML = Array.from(this.duplicados.entries())
+    .map(([id, rep]) => {
+      // rep = número de repetições ALÉM da 1ª leitura
+      // se rep === 1 → mostra só o ID
+      // se rep > 1 → mostra ID X"rep"
+      const sufixo = rep > 1 ? ` X"${rep}"` : '';
+      return `<li class='list-group-item list-group-item-warning'>${id}${sufixo}</li>`;
+    })
+    .join('');
+  $('#duplicados-list').html(
+    `<h6>Duplicados (<span class='badge badge-warning'>${totalDuplicadosUnicos}</span>)</h6>` + duplicadosHTML
+  );
+
+  $('#verified-total').text(this.conferidos.size);
+  this.atualizarProgresso();
+},
+
 
 conferirId(codigo) {
-  if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
+  const agora = new Date().toLocaleString(); // data e hora local
+
+  // Já foi conferido antes? Conta como duplicado.
+  if (this.conferidos.has(codigo)) {
+    this.registrarDuplicado(codigo);
+    this.timestamps.set(codigo, agora);
+    this.tocarAlerta(); // 🔊 alerta para duplicado
+    $('#barcode-input').val('').focus();
+    this.atualizarListas();
     return;
   }
 
-  const dataHora = new Date().toLocaleString(); // data e hora local
+  // Já foi classificado como fora de rota antes? Também conta como duplicado.
+  if (this.foraDeRota.has(codigo)) {
+    this.registrarDuplicado(codigo);
+    this.timestamps.set(codigo, agora);
+    this.tocarAlerta(); // 🔊 alerta para duplicado
+    $('#barcode-input').val('').focus();
+    this.atualizarListas();
+    return;
+  }
 
+  // Primeira vez que vemos este código:
   if (this.ids.has(codigo)) {
+    // Está na lista esperada → marcar como conferido
     this.ids.delete(codigo);
     this.conferidos.add(codigo);
-    this.timestamps.set(codigo, dataHora);
+    this.timestamps.set(codigo, agora);
   } else {
+    // Não está na lista → fora de rota
     this.foraDeRota.add(codigo);
-    this.timestamps.set(codigo, dataHora);
+    this.timestamps.set(codigo, agora);
 
-    // 🔊 Tocar som se não for conferência via CSV
+    // 🔊 Toca som apenas se a leitura não veio do CSV
     if (!this.viaCsv) {
       const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
       audio.play();
@@ -69,6 +143,7 @@ conferirId(codigo) {
   $('#barcode-input').val('').focus();
   this.atualizarListas();
 },
+
 
 
   // Nova função: gera CSV com coluna TEXT para conferidos e fora de rota
