@@ -51,19 +51,24 @@
         <input type="text" id="barcode-input" class="form-control" placeholder="Leia ou digite o código de barras" autofocus>
 
         <div class="row text-center mt-4">
-          <div class="col-md-4">
+          <div class="col-md-3">
             <h5>Conferidos</h5>
             <ul id="conferidos-list" class="list-group list-section"></ul>
           </div>
-          <div class="col-md-4">
+          <div class="col-md-3">
             <h5>Faltantes</h5>
             <ul id="faltantes-list" class="list-group list-section"></ul>
           </div>
-          <div class="col-md-4">
+          <div class="col-md-3">
             <h5>Fora de Rota</h5>
             <ul id="fora-rota-list" class="list-group list-section"></ul>
           </div>
+          <div class="col-md-3">
+            <h5>Duplicados</h5>
+            <ul id="duplicados-list" class="list-group list-section"></ul>
+          </div>
         </div>
+
 
         <div class="text-center my-3">
           <input type="file" id="csv-input" accept=".csv" class="form-control mb-2">
