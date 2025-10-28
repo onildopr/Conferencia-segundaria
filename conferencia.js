@@ -69,34 +69,65 @@ const ConferenciaApp = {
     this.atualizarListas();
   },
 
-  gerarCsvText() {
-    const all = [...this.conferidos, ...this.foraDeRota];
-    const valid = all.filter(id => /^\d+$/.test(id.trim()));
+gerarCsvText() {
+  const all = [...this.conferidos, ...this.foraDeRota];
+  if (all.length === 0) {
+    alert('Nenhum ID para exportar.');
+    return;
+  }
 
-    if (valid.length === 0) {
-      alert('Não há IDs numéricos para exportar.');
-      return;
+  // helper para parsear qualquer coisa que já esteja salva nos timestamps
+  const parseDateSafe = (value) => {
+    if (!value) return new Date();
+    if (value instanceof Date) return value;
+    if (typeof value === 'number') return new Date(value);
+    if (typeof value === 'string') {
+      // ISO?
+      if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+        const d = new Date(value);
+        if (!isNaN(d.getTime())) return d;
+      }
+      // tenta converter "dd/mm/aaaa hh:mm:ss" → ISO
+      const m = value.match(/^(\d{2})\/(\d{2})\/(\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+      if (m) {
+        const [ , dd, mm, yyyy, HH, MM, SS = '00' ] = m;
+        const iso = `${yyyy}-${mm}-${dd}T${HH}:${MM}:${SS}`;
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) return d;
+      }
+      // último recurso
+      const d = new Date(value);
+      if (!isNaN(d.getTime())) return d;
     }
+    return new Date();
+  };
 
-    const lines = [
-      'DATA/HORA,ID',
-      ...valid.map(id => {
-        const dataHora = this.timestamps.get(id) || '';
-        return `"${dataHora}","${id}"`;
-      })
-    ];
+  const zona = 'Horário Padrão de Brasília';
+  const header = 'date,time,time_zone,format,text,notes,favorite,date_utc,time_utc,metadata';
 
-    const conteudo = lines.join('\r\n');
+  const linhas = all.map(id => {
+    const lidaEm = parseDateSafe(this.timestamps.get(id));
+    const date = lidaEm.toISOString().slice(0, 10);              // 2025-10-27
+    const time = lidaEm.toTimeString().split(' ')[0];            // 16:22:33
+    const dateUtc = lidaEm.toISOString().slice(0, 10);           // 2025-10-27
+    const timeUtc = lidaEm.toISOString().split('T')[1].split('.')[0]; // 20:22:33
 
-    const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
+    // estrutura EXATA do seu modelo:
+    return `${date},${time},${zona},Code 128,${id},,0,${dateUtc},${timeUtc},`;
+  });
 
-    const cluster = this.cluster || 'semCluster';
-    const rota = this.routeId || 'semRota';
-    link.download = `${cluster}_${rota}.csv`;
-    link.click();
-  },
+  const conteudo = [header, ...linhas].join('\r\n'); // CRLF
+
+  const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+
+  const cluster = this.cluster || 'semCluster';
+  const rota = this.routeId || 'semRota';
+  link.download = `${cluster}_${rota}_padrao.csv`;
+
+  link.click();
+},
 
   finalizar() {
     this.gerarCsvText();
