@@ -10,39 +10,6 @@ const ConferenciaApp = {
   routeId: '',
   startTime: null,
   viaCsv: false, // flag para controlar conferência via CSV
-  /**
-   * Contagem de IDs que foram lidos mais de uma vez.
-   * Essas informações s o  teis para detectar se o scanner
-   * leu um c digo mais de uma vez devido a um erro.
-   * @type {Map<string,number>}
-   */
-  duplicados: new Map(), // ID => contagem de repeti es além da 1ª leitura
-
-  /**
-   * Registra um c digo como duplicado.
-   * @param {string} codigo
-   */
-  registrarDuplicado(codigo) {
-    const atual = this.duplicados.get(codigo) || 0;
-    this.duplicados.set(codigo, atual + 1);
-  },
-  /**
-   * Toca um alerta de som.
-   * @param {boolean} viaCsv - Flag para indicar se a confer ncia est  sendo feita via CSV.
-   */
-  tocarAlerta(viaCsv = false) {
-    if (!viaCsv) {
-      try {
-        // Cria um objeto de  udio com o som de alerta
-        const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
-        // Toca o som de alerta
-        audio.play();
-      } catch (e) {
-        // Silencia erro de autoplay em alguns navegadores
-      }
-    }
-  },
-
 
   alertar(mensagem) {
     alert(mensagem);
@@ -54,87 +21,45 @@ const ConferenciaApp = {
     $('#progress-bar').css('width', percentual + '%').text(Math.floor(percentual) + '%');
   },
 
-atualizarListas() {
-  // Conferidos
-  $('#conferidos-list').html(
-    `<h6>Conferidos (<span class='badge badge-success'>${this.conferidos.size}</span>)</h6>` +
-    Array.from(this.conferidos)
-      .map(id => `<li class='list-group-item list-group-item-success'>${id}</li>`)
-      .join('')
-  );
-
-  // Faltantes (restantes a conferir)
-  $('#faltantes-list').html(
-    `<h6>Faltantes (<span class='badge badge-danger'>${this.ids.size}</span>)</h6>` +
-    Array.from(this.ids)
-      .map(id => `<li class='list-group-item list-group-item-danger'>${id}</li>`)
-      .join('')
-  );
-
-  // Fora de rota
-  $('#fora-rota-list').html(
-    `<h6>Fora de Rota (<span class='badge badge-warning'>${this.foraDeRota.size}</span>)</h6>` +
-    Array.from(this.foraDeRota)
-      .map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`)
-      .join('')
-  );
-
-  // 🔶 Duplicados (laranja)
-  const totalDuplicadosUnicos = this.duplicados.size;
-  const duplicadosHTML = Array.from(this.duplicados.entries())
-    .map(([id, rep]) => {
-      // rep = número de repetições ALÉM da 1ª leitura
-      // se rep === 1 → mostra só o ID
-      // se rep > 1 → mostra ID X"rep"
-      const sufixo = rep > 1 ? ` X"${rep}"` : '';
-      return `<li class='list-group-item list-group-item-warning'>${id}${sufixo}</li>`;
-    })
-    .join('');
-  $('#duplicados-list').html(
-    `<h6>Duplicados (<span class='badge badge-warning'>${totalDuplicadosUnicos}</span>)</h6>` + duplicadosHTML
-  );
-
-  $('#verified-total').text(this.conferidos.size);
-  this.atualizarProgresso();
-},
-
+  atualizarListas() {
+    $('#conferidos-list').html(
+      `<h6>Conferidos (<span class='badge badge-success'>${this.conferidos.size}</span>)</h6>` +
+      Array.from(this.conferidos)
+        .map(id => `<li class='list-group-item list-group-item-success'>${id}</li>`)
+        .join('')
+    );
+    $('#faltantes-list').html(
+      `<h6>Faltantes (<span class='badge badge-danger'>${this.ids.size}</span>)</h6>` +
+      Array.from(this.ids)
+        .map(id => `<li class='list-group-item list-group-item-danger'>${id}</li>`)
+        .join('')
+    );
+    $('#fora-rota-list').html(
+      `<h6>Fora de Rota (<span class='badge badge-warning'>${this.foraDeRota.size}</span>)</h6>` +
+      Array.from(this.foraDeRota)
+        .map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`)
+        .join('')
+    );
+    $('#verified-total').text(this.conferidos.size);
+    this.atualizarProgresso();
+  },
 
 conferirId(codigo) {
-  // ANTES: const agora = new Date().toLocaleString();
-  const agora = new Date().toISOString(); // ✅ ISO seguro para parse
-
-  // Já foi conferido antes? Conta como duplicado.
-  if (this.conferidos.has(codigo)) {
-    this.registrarDuplicado(codigo);
-    this.timestamps.set(codigo, agora);
-    this.tocarAlerta(); // 🔊 alerta para duplicado
-    $('#barcode-input').val('').focus();
-    this.atualizarListas();
+  if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
     return;
   }
 
-  // Já foi classificado como fora de rota antes? Também conta como duplicado.
-  if (this.foraDeRota.has(codigo)) {
-    this.registrarDuplicado(codigo);
-    this.timestamps.set(codigo, agora);
-    this.tocarAlerta(); // 🔊 alerta para duplicado
-    $('#barcode-input').val('').focus();
-    this.atualizarListas();
-    return;
-  }
+  const dataHora = new Date().toLocaleString(); // data e hora local
 
-  // Primeira vez que vemos este código:
   if (this.ids.has(codigo)) {
-    // Está na lista esperada → marcar como conferido
     this.ids.delete(codigo);
     this.conferidos.add(codigo);
-    this.timestamps.set(codigo, agora);
+    this.timestamps.set(codigo, dataHora);
   } else {
-    // Não está na lista → fora de rota
     this.foraDeRota.add(codigo);
-    this.timestamps.set(codigo, agora);
+    this.timestamps.set(codigo, dataHora);
 
-    // 🔊 Toca som apenas se a leitura não veio do CSV
+    // 🔊 Tocar som se não for conferência via CSV
     if (!this.viaCsv) {
       const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
       audio.play();
@@ -146,68 +71,42 @@ conferirId(codigo) {
 },
 
 
-
   // Nova função: gera CSV com coluna TEXT para conferidos e fora de rota
 // Gera CSV só com IDs numéricos, sem header extra, e CRLF
 gerarCsvText() {
   const all = [...this.conferidos, ...this.foraDeRota];
-  if (all.length === 0) {
-    alert('Nenhum ID para exportar.');
+  const valid = all.filter(id => /^\d+$/.test(id.trim()));
+
+  if (valid.length === 0) {
+    alert('Não há IDs numéricos para exportar.');
     return;
   }
 
-  // helper para parsear qualquer coisa que já esteja salva nos timestamps
-  const parseDateSafe = (value) => {
-    if (!value) return new Date();
-    if (value instanceof Date) return value;
-    if (typeof value === 'number') return new Date(value);
-    if (typeof value === 'string') {
-      // ISO?
-      if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
-        const d = new Date(value);
-        if (!isNaN(d.getTime())) return d;
-      }
-      // tenta converter "dd/mm/aaaa hh:mm:ss" → ISO
-      const m = value.match(/^(\d{2})\/(\d{2})\/(\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
-      if (m) {
-        const [ , dd, mm, yyyy, HH, MM, SS = '00' ] = m;
-        const iso = `${yyyy}-${mm}-${dd}T${HH}:${MM}:${SS}`;
-        const d = new Date(iso);
-        if (!isNaN(d.getTime())) return d;
-      }
-      // último recurso
-      const d = new Date(value);
-      if (!isNaN(d.getTime())) return d;
-    }
-    return new Date();
-  };
+  const lines = [
+    'DATA/HORA,ID', // Cabeçalho
+    ...valid.map(id => {
+      const dataHora = this.timestamps.get(id) || '';
+      return `"${dataHora}","${id}"`;
+    })
+  ];
 
-  const zona = 'Horário Padrão de Brasília';
-  const header = 'date,time,time_zone,format,text,notes,favorite,date_utc,time_utc,metadata';
-
-  const linhas = all.map(id => {
-    const lidaEm = parseDateSafe(this.timestamps.get(id));
-    const date = lidaEm.toISOString().slice(0, 10);              // 2025-10-27
-    const time = lidaEm.toTimeString().split(' ')[0];            // 16:22:33
-    const dateUtc = lidaEm.toISOString().slice(0, 10);           // 2025-10-27
-    const timeUtc = lidaEm.toISOString().split('T')[1].split('.')[0]; // 20:22:33
-
-    // estrutura EXATA do seu modelo:
-    return `${date},${time},${zona},Code 128,${id},,0,${dateUtc},${timeUtc},`;
-  });
-
-  const conteudo = [header, ...linhas].join('\r\n'); // CRLF
+  const conteudo = lines.join('\r\n');
 
   const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
 
+  // Gera nome do arquivo no formato <cluster>_<routeId>.csv
   const cluster = this.cluster || 'semCluster';
   const rota = this.routeId || 'semRota';
-  link.download = `${cluster}_${rota}_padrao.csv`;
+  const nomeArquivo = `${cluster}_${rota}.csv`;
 
+  link.download = nomeArquivo;
   link.click();
 },
+
+
+
 
   finalizar() {
     // gera o CSV ao finalizar a conferência
@@ -282,7 +181,7 @@ gerarCsvText() {
     adicionarTexto('Fora de Rota:', [255, 165, 0], this.foraDeRota);
 
     doc.save('relatorio.pdf');
-  },
+  }
 };
 
 // Botão de adicionar IDs manualmente
@@ -464,4 +363,3 @@ $('#back-btn').click(() => location.reload());
 $('#export-txt').click(() => ConferenciaApp.gerarRelatorioTxt());
 $('#export-csv').click(() => ConferenciaApp.gerarRelatorioCsv());
 $('#export-pdf').click(() => ConferenciaApp.gerarRelatorioPdf());
-
