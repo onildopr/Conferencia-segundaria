@@ -1,7 +1,7 @@
 const { jsPDF } = window.jspdf;
 
 const ConferenciaApp = {
-  timestamps: new Map(), // ID => data/hora conferido
+  timestamps: new Map(),
   ids: new Set(),
   conferidos: new Set(),
   faltantes: new Set(),
@@ -9,14 +9,15 @@ const ConferenciaApp = {
   totalConferidos: 0,
   routeId: '',
   startTime: null,
-  viaCsv: false, // flag para controlar conferência via CSV
+  viaCsv: false,
+  cluster: '',
 
   alertar(mensagem) {
     alert(mensagem);
   },
 
   atualizarProgresso() {
-    const total = this.ids.size + this.conferidos.size;
+    const total = this.ids.size + this.conferidos.size + this.foraDeRota.size;
     const percentual = total ? (this.conferidos.size / total) * 100 : 0;
     $('#progress-bar').css('width', percentual + '%').text(Math.floor(percentual) + '%');
   },
@@ -44,87 +45,70 @@ const ConferenciaApp = {
     this.atualizarProgresso();
   },
 
-conferirId(codigo) {
-  if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
-    return;
-  }
+  conferirId(codigo) {
+    if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) return;
 
-  const dataHora = new Date().toLocaleString(); // data e hora local
+    const dataHora = new Date().toLocaleString();
 
-  if (this.ids.has(codigo)) {
-    this.ids.delete(codigo);
-    this.conferidos.add(codigo);
-    this.timestamps.set(codigo, dataHora);
-  } else {
-    this.foraDeRota.add(codigo);
-    this.timestamps.set(codigo, dataHora);
-
-    // 🔊 Tocar som se não for conferência via CSV
-    if (!this.viaCsv) {
-      const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
-      audio.play();
+    if (this.ids.has(codigo)) {
+      this.ids.delete(codigo);
+      this.conferidos.add(codigo);
+      this.timestamps.set(codigo, dataHora);
+    } else {
+      this.foraDeRota.add(codigo);
+      this.timestamps.set(codigo, dataHora);
+      if (!this.viaCsv) {
+        try {
+          const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
+          audio.play().catch(() => {});
+        } catch {}
+      }
     }
-  }
 
-  $('#barcode-input').val('').focus();
-  this.atualizarListas();
-},
+    $('#barcode-input').val('').focus();
+    this.atualizarListas();
+  },
 
+  gerarCsvText() {
+    const all = [...this.conferidos, ...this.foraDeRota];
+    const valid = all.filter(id => /^\d+$/.test(id.trim()));
 
-  // Nova função: gera CSV com coluna TEXT para conferidos e fora de rota
-// Gera CSV só com IDs numéricos, sem header extra, e CRLF
-gerarCsvText() {
-  const all = [...this.conferidos, ...this.foraDeRota];
-  const valid = all.filter(id => /^\d+$/.test(id.trim()));
+    if (valid.length === 0) {
+      alert('Não há IDs numéricos para exportar.');
+      return;
+    }
 
-  if (valid.length === 0) {
-    alert('Não há IDs numéricos para exportar.');
-    return;
-  }
+    const lines = [
+      'DATA/HORA,ID',
+      ...valid.map(id => {
+        const dataHora = this.timestamps.get(id) || '';
+        return `"${dataHora}","${id}"`;
+      })
+    ];
 
-  const lines = [
-    'DATA/HORA,ID', // Cabeçalho
-    ...valid.map(id => {
-      const dataHora = this.timestamps.get(id) || '';
-      return `"${dataHora}","${id}"`;
-    })
-  ];
+    const conteudo = lines.join('\r\n');
 
-  const conteudo = lines.join('\r\n');
+    const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
 
-  const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-
-  // Gera nome do arquivo no formato <cluster>_<routeId>.csv
-  const cluster = this.cluster || 'semCluster';
-  const rota = this.routeId || 'semRota';
-  const nomeArquivo = `${cluster}_${rota}.csv`;
-
-  link.download = nomeArquivo;
-  link.click();
-},
-
-
-
+    const cluster = this.cluster || 'semCluster';
+    const rota = this.routeId || 'semRota';
+    link.download = `${cluster}_${rota}.csv`;
+    link.click();
+  },
 
   finalizar() {
-    // gera o CSV ao finalizar a conferência
     this.gerarCsvText();
     $('#reportModal').modal('show');
   },
 
   gerarRelatorioTxt() {
     let conteudo = '';
-    if (this.conferidos.size) {
-      conteudo += 'CONFERIDOS:\n' + Array.from(this.conferidos).join('\n') + '\n\n';
-    }
-    if (this.ids.size) {
-      conteudo += 'FALTANTES:\n' + Array.from(this.ids).join('\n') + '\n\n';
-    }
-    if (this.foraDeRota.size) {
-      conteudo += 'FORA DE ROTA:\n' + Array.from(this.foraDeRota).join('\n') + '\n';
-    }
+    if (this.conferidos.size) conteudo += 'CONFERIDOS:\n' + Array.from(this.conferidos).join('\n') + '\n\n';
+    if (this.ids.size) conteudo += 'FALTANTES:\n' + Array.from(this.ids).join('\n') + '\n\n';
+    if (this.foraDeRota.size) conteudo += 'FORA DE ROTA:\n' + Array.from(this.foraDeRota).join('\n');
+
     const blob = new Blob([conteudo], { type: 'text/plain;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -184,137 +168,79 @@ gerarCsvText() {
   }
 };
 
-// Botão de adicionar IDs manualmente
 $('#manual-btn').click(() => {
   $('#initial-interface').addClass('d-none');
   $('#manual-interface').removeClass('d-none');
 });
 
-// Submissão de IDs manuais
-$('#submit-ids').click(function () {
+$('#submit-manual').click(() => {
   try {
-    let manualIds = $('#manual-ids')
+    let manualIds = $('#manual-input')
       .val()
       .split(/[\s,]+/)
       .map(id => id.trim());
     manualIds.forEach(id => {
-      if (id) idsSet.add(id);
+      if (id) ConferenciaApp.ids.add(id);
     });
 
-    const idsArray = Array.from(idsSet);
-    if (idsArray.length === 0) {
+    if (ConferenciaApp.ids.size === 0) {
       alert('Nenhum ID válido inserido.');
       return;
     }
 
-    let resultadoHTML = "";
-    idsArray.forEach(id => {
-      resultadoHTML += `<li id="id-${id}" class="list-group-item">${id} <span class="badge badge-secondary">Pendente</span></li>`;
-    });
-
-    $('#results').html(resultadoHTML);
-    $('#total-extracted').text(idsArray.length);
+    $('#total-extracted').text(ConferenciaApp.ids.size);
     $('#manual-interface').addClass('d-none');
-    $('#new-interface').removeClass('d-none');
+    $('#conference-interface').removeClass('d-none');
+    ConferenciaApp.atualizarListas();
   } catch (error) {
-    alert('Ocorreu um erro ao processar os dados. Tente novamente.');
+    alert('Erro ao processar IDs manuais.');
     console.error(error);
   }
 });
 
-// Extração de IDs via HTML
 $('#extract-btn').click(() => {
   let html = $('#html-input').val();
   html = html.replace(/<[^>]+>/g, ' ');
-  if (!html.includes('4')) {
-    ConferenciaApp.alertar('Nenhum ID começando com 4 encontrado.');
-    return;
-  }
+
   ConferenciaApp.ids.clear();
-  const idsEncontrados = [...html.matchAll(/"id":"(4\d{10})"/g)].map(m => m[1]);
-  const regexRoute = /"routeId":(\d+)/;
-  const routeMatch = regexRoute.exec(html);
+  const idsEncontrados = [...html.matchAll(/"id":(4\d{10})/g)].map(m => m[1]);
+  const routeMatch = /"routeId":(\d+)/.exec(html);
   if (routeMatch) {
     ConferenciaApp.routeId = routeMatch[1];
     $('#route-title').text(`Conferência da rota: ${ConferenciaApp.routeId}`);
   }
-  if (idsEncontrados.length === 0) {
-    ConferenciaApp.alertar('Nenhum ID válido encontrado.');
-    return;
-  }
+
   const regexFacility = /"destinationFacilityId":"([^"]+)","name":"([^"]+)"/;
   const facMatch = regexFacility.exec(html);
+  if (facMatch) {
+    ConferenciaApp.destinationFacilityId = facMatch[1];
+    ConferenciaApp.destinationFacilityName = facMatch[2];
+    $('#destination-facility-title').html(`<strong>XPT:</strong> ${facMatch[1]}`);
+    $('#destination-facility-name').html(`<strong>DESTINO:</strong> ${facMatch[2]}`);
+  }
 
-  if (!facMatch) {
-  ConferenciaApp.alertar('Nenhuma facility encontrada.');
-  } 
-  else {
-  const destId   = facMatch[1];    // ex: “ETO2”
-  const facName  = facMatch[2];    // ex: “Araguaína”
-  ConferenciaApp.destinationFacilityId   = destId;
-  ConferenciaApp.destinationFacilityName = facName;
-
-  // exiba onde quiser (certifique-se de criar estes elementos no HTML):
-  $('#destination-facility-title').html(`<strong>XPT:</strong> ${destId}`);
-  $('#destination-facility-name').html(`<strong>DESTINO:</strong> ${facName}`);
-}
   idsEncontrados.forEach(id => ConferenciaApp.ids.add(id));
-  $('#route-title').html(`ROTA: <strong>${ConferenciaApp.routeId}</strong><br> CONFERENCIA DE ID's`);
+  $('#route-title').html(`ROTA: <strong>${ConferenciaApp.routeId}</strong>`);
   $('#extracted-total').text(ConferenciaApp.ids.size);
   $('#initial-interface').addClass('d-none');
   $('#conference-interface').removeClass('d-none');
   ConferenciaApp.atualizarListas();
-  // depois de fazer html = html.replace(/<[^>]+>/g, ' ')
+
   const regexCluster = /"cluster":"([^"]+)"/g;
   const clusters = [...html.matchAll(regexCluster)].map(m => m[1]);
-
-  if (clusters.length === 0) {
-    ConferenciaApp.alertar('Nenhum cluster encontrado.');
-  } else {
-  // Se você só espera um cluster:
-  const cluster = clusters[0];
-  console.log('Cluster extraído:', cluster);
-  // Ou guarde em alguma propriedade:
-  ConferenciaApp.cluster = cluster;
-  $('#cluster-title').html(`
-  <span style="font-size:1.0em;">
-    CLUSTER:
-  </span style="font-size:1.0em">
-  <strong style="font-size:1.0em;">
-    ${cluster}
-  </strong>
-`);
+  if (clusters.length) {
+    ConferenciaApp.cluster = clusters[0];
+    $('#cluster-title').html(`CLUSTER: <strong>${clusters[0]}</strong>`);
   }
-
 });
 
-// Submissão de IDs manuais na nova interface
-$('#submit-manual').click(() => {
-  const idsManuais = $('#manual-input')
-    .val()
-    .split(/\s|,+/)
-    .filter(id => /^4\d{10}$/.test(id.trim()));
-  idsManuais.forEach(id => ConferenciaApp.ids.add(id));
-  if (!ConferenciaApp.ids.size) {
-    ConferenciaApp.alertar('Nenhum ID válido inserido.');
-    return;
-  }
-  $('#manual-interface').addClass('d-none');
-  $('#conference-interface').removeClass('d-none');
-  $('#route-title').text('IDs Manuais');
-  $('#extracted-total').text(ConferenciaApp.ids.size);
-  ConferenciaApp.atualizarListas();
-});
-
-// Entrada de código de barras manual
 $('#barcode-input').keypress(e => {
   if (e.which === 13) {
-    ConferenciaApp.viaCsv = false; // garantir que não é CSV
+    ConferenciaApp.viaCsv = false;
     ConferenciaApp.conferirId($('#barcode-input').val().trim());
   }
 });
 
-// Processamento de CSV
 $('#check-csv').click(() => {
   const fileInput = document.getElementById('csv-input');
   if (fileInput.files.length === 0) {
@@ -322,10 +248,10 @@ $('#check-csv').click(() => {
     return;
   }
 
-  ConferenciaApp.viaCsv = true; // sinalizar conferência via CSV
-
+  ConferenciaApp.viaCsv = true;
   const file = fileInput.files[0];
   const reader = new FileReader();
+
   reader.onload = function(e) {
     const csvText = e.target.result;
     const linhas = csvText.split(/\r?\n/);
@@ -334,30 +260,26 @@ $('#check-csv').click(() => {
       return;
     }
     const header = linhas[0].split(',');
-    const textCol = header.findIndex(h => h.toLowerCase().includes('text'));
+    const textCol = header.findIndex(h => /(text|texto|id)/i.test(h));
     if (textCol === -1) {
-      ConferenciaApp.alertar('Coluna "text" não encontrada no CSV.');
+      ConferenciaApp.alertar('Coluna apropriada não encontrada (text/texto/id).');
       return;
     }
     for (let i = 1; i < linhas.length; i++) {
       const colunas = linhas[i].split(',');
       if (colunas.length <= textCol) continue;
-      let campo = colunas[textCol]
-        .trim()
-        .replace(/^"|"$/g, '')
-        .replace(/""/g, '"');
+      let campo = colunas[textCol].trim().replace(/^"|"$/g, '').replace(/""/g, '"');
       const match = campo.match(/(4\d{10})/);
       if (match) {
         ConferenciaApp.conferirId(match[1]);
       }
     }
     ConferenciaApp.atualizarListas();
-    ConferenciaApp.viaCsv = false; // resetar flag CSV
+    ConferenciaApp.viaCsv = false;
   };
   reader.readAsText(file, 'UTF-8');
 });
 
-// Botões finais de relatório e navegação
 $('#finish-btn').click(() => ConferenciaApp.finalizar());
 $('#back-btn').click(() => location.reload());
 $('#export-txt').click(() => ConferenciaApp.gerarRelatorioTxt());
