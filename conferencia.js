@@ -1,10 +1,5 @@
 const { jsPDF } = window.jspdf;
 
-window.addEventListener('error', (e) => {
-  console.error('JS ERROR:', e.message, e.filename, e.lineno, e.colno);
-});
-
-
 const ConferenciaApp = {
   timestamps: new Map(), // ID => data/hora conferido
   ids: new Set(),
@@ -469,3 +464,4 @@ $('#back-btn').click(() => location.reload());
 $('#export-txt').click(() => ConferenciaApp.gerarRelatorioTxt());
 $('#export-csv').click(() => ConferenciaApp.gerarRelatorioCsv());
 $('#export-pdf').click(() => ConferenciaApp.gerarRelatorioPdf());
+
