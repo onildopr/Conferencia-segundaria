@@ -1,5 +1,10 @@
 const { jsPDF } = window.jspdf;
 
+window.addEventListener('error', (e) => {
+  console.error('JS ERROR:', e.message, e.filename, e.lineno, e.colno);
+});
+
+
 const ConferenciaApp = {
   timestamps: new Map(), // ID => data/hora conferido
   ids: new Set(),
@@ -100,7 +105,8 @@ atualizarListas() {
 
 
 conferirId(codigo) {
-  const agora = new Date().toLocaleString(); // data e hora local
+  // ANTES: const agora = new Date().toLocaleString();
+  const agora = new Date().toISOString(); // ✅ ISO seguro para parse
 
   // Já foi conferido antes? Conta como duplicado.
   if (this.conferidos.has(codigo)) {
@@ -150,38 +156,63 @@ conferirId(codigo) {
 // Gera CSV só com IDs numéricos, sem header extra, e CRLF
 gerarCsvText() {
   const all = [...this.conferidos, ...this.foraDeRota];
-  const valid = all.filter(id => /^\d+$/.test(id.trim()));
-
-  if (valid.length === 0) {
-    alert('Não há IDs numéricos para exportar.');
+  if (all.length === 0) {
+    alert('Nenhum ID para exportar.');
     return;
   }
 
-  const lines = [
-    'DATA/HORA,ID', // Cabeçalho
-    ...valid.map(id => {
-      const dataHora = this.timestamps.get(id) || '';
-      return `"${dataHora}","${id}"`;
-    })
-  ];
+  // helper para parsear qualquer coisa que já esteja salva nos timestamps
+  const parseDateSafe = (value) => {
+    if (!value) return new Date();
+    if (value instanceof Date) return value;
+    if (typeof value === 'number') return new Date(value);
+    if (typeof value === 'string') {
+      // ISO?
+      if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+        const d = new Date(value);
+        if (!isNaN(d.getTime())) return d;
+      }
+      // tenta converter "dd/mm/aaaa hh:mm:ss" → ISO
+      const m = value.match(/^(\d{2})\/(\d{2})\/(\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+      if (m) {
+        const [ , dd, mm, yyyy, HH, MM, SS = '00' ] = m;
+        const iso = `${yyyy}-${mm}-${dd}T${HH}:${MM}:${SS}`;
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) return d;
+      }
+      // último recurso
+      const d = new Date(value);
+      if (!isNaN(d.getTime())) return d;
+    }
+    return new Date();
+  };
 
-  const conteudo = lines.join('\r\n');
+  const zona = 'Horário Padrão de Brasília';
+  const header = 'date,time,time_zone,format,text,notes,favorite,date_utc,time_utc,metadata';
+
+  const linhas = all.map(id => {
+    const lidaEm = parseDateSafe(this.timestamps.get(id));
+    const date = lidaEm.toISOString().slice(0, 10);              // 2025-10-27
+    const time = lidaEm.toTimeString().split(' ')[0];            // 16:22:33
+    const dateUtc = lidaEm.toISOString().slice(0, 10);           // 2025-10-27
+    const timeUtc = lidaEm.toISOString().split('T')[1].split('.')[0]; // 20:22:33
+
+    // estrutura EXATA do seu modelo:
+    return `${date},${time},${zona},Code 128,${id},,0,${dateUtc},${timeUtc},`;
+  });
+
+  const conteudo = [header, ...linhas].join('\r\n'); // CRLF
 
   const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
 
-  // Gera nome do arquivo no formato <cluster>_<routeId>.csv
   const cluster = this.cluster || 'semCluster';
   const rota = this.routeId || 'semRota';
-  const nomeArquivo = `${cluster}_${rota}.csv`;
+  link.download = `${cluster}_${rota}_padrao.csv`;
 
-  link.download = nomeArquivo;
   link.click();
 },
-
-
-
 
   finalizar() {
     // gera o CSV ao finalizar a conferência
@@ -256,7 +287,7 @@ gerarCsvText() {
     adicionarTexto('Fora de Rota:', [255, 165, 0], this.foraDeRota);
 
     doc.save('relatorio.pdf');
-  }
+  },
 };
 
 // Botão de adicionar IDs manualmente
