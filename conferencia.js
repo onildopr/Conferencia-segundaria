@@ -56,39 +56,51 @@ const ConferenciaApp = {
     this.atualizarProgresso();
   },
 
-  conferirId(codigo) {
-    if (!codigo) return;
+conferirId(codigo) {
+  if (!codigo) return;
 
-    // se já foi conferido, conta duplicata
-    if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
-      const count = this.duplicados.get(codigo) || 1;
-      this.duplicados.set(codigo, count + 1);
-      this.timestamps.set(codigo, new Date().toLocaleString());
-      $('#barcode-input').val('').focus();
-      this.atualizarListas();
-      return;
-    }
+  const dataHora = new Date().toLocaleString();
 
-    const dataHora = new Date().toLocaleString();
+  // ✅ Tratativa de DUPLICATAS
+  if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
+    const count = this.duplicados.get(codigo) || 1;
+    this.duplicados.set(codigo, count + 1);
+    this.timestamps.set(codigo, dataHora);
 
-    if (this.ids.has(codigo)) {
-      this.ids.delete(codigo);
-      this.conferidos.add(codigo);
-      this.timestamps.set(codigo, dataHora);
-    } else {
-      this.foraDeRota.add(codigo);
-      this.timestamps.set(codigo, dataHora);
-      if (!this.viaCsv) {
-        try {
-          const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
-          audio.play().catch(() => {});
-        } catch {}
-      }
+    // 🔊 toca som de duplicata, igual ao fora de rota
+    if (!this.viaCsv) {
+      try {
+        const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
+        audio.play().catch(() => {});
+      } catch {}
     }
 
     $('#barcode-input').val('').focus();
     this.atualizarListas();
-  },
+    return;
+  }
+
+  // ✅ Pacote normal
+  if (this.ids.has(codigo)) {
+    this.ids.delete(codigo);
+    this.conferidos.add(codigo);
+    this.timestamps.set(codigo, dataHora);
+  } else {
+    // ✅ Fora de rota
+    this.foraDeRota.add(codigo);
+    this.timestamps.set(codigo, dataHora);
+
+    if (!this.viaCsv) {
+      try {
+        const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
+        audio.play().catch(() => {});
+      } catch {}
+    }
+  }
+
+  $('#barcode-input').val('').focus();
+  this.atualizarListas();
+},
 
   gerarCsvText() {
     const all = [...this.conferidos, ...this.foraDeRota, ...this.duplicados.keys()];
@@ -238,7 +250,21 @@ $('#extract-btn').click(() => {
   let html = $('#html-input').val().replace(/<[^>]+>/g, ' ');
   ConferenciaApp.ids.clear();
 
-  const idsEncontrados = [...html.matchAll(/"id":(4\d{10})/g)].map(m => m[1]);
+  // 🔎 Pega o shipment "id" e o "receiver_id" no mesmo bloco
+  const regexEnvio = /"id":(4\d{10})[\s\S]*?"receiver_id":"([^"]+)"/g;
+  let match;
+  while ((match = regexEnvio.exec(html)) !== null) {
+    const shipmentId = match[1];
+    const receiverId = match[2];
+
+    // ✅ Só adiciona se NÃO for place (receiverId sem "_")
+    if (!receiverId.includes('_')) {
+      ConferenciaApp.ids.add(shipmentId);
+    }
+  }
+
+  // === resto do seu código permanece igual ===
+
   const routeMatch = /"routeId":(\d+)/.exec(html);
   if (routeMatch) {
     ConferenciaApp.routeId = routeMatch[1];
@@ -254,7 +280,6 @@ $('#extract-btn').click(() => {
     $('#destination-facility-name').html(`<strong>DESTINO:</strong> ${facMatch[2]}`);
   }
 
-  idsEncontrados.forEach(id => ConferenciaApp.ids.add(id));
   ConferenciaApp.totalInicial = ConferenciaApp.ids.size;
 
   $('#route-title').html(`ROTA: <strong>${ConferenciaApp.routeId}</strong>`);
@@ -270,6 +295,7 @@ $('#extract-btn').click(() => {
     $('#cluster-title').html(`CLUSTER: <strong>${clusters[0]}</strong>`);
   }
 });
+
 
 $('#barcode-input').keypress(e => {
   if (e.which === 13) {
