@@ -55,11 +55,31 @@ const ConferenciaApp = {
     $('#verified-total').text(this.conferidos.size);
     this.atualizarProgresso();
   },
+normalizarCodigo(raw) {
+  if (!raw) return null;
+
+  // Remove espaços e caracteres invisíveis / de controle
+  let s = String(raw)
+    .trim()
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); // controles ASCII
+
+  // Alguns leitores “escapam” controles como ^...^, então tentamos extrair o ID numérico
+  // Seu padrão atual já procura (4\d{10}) em CSV; vamos reutilizar a mesma lógica aqui.
+  let m = s.match(/(4\d{10})/);
+  if (m) return m[1];
+
+  // Fallback: pega qualquer sequência de 11+ dígitos e usa os 11 primeiros
+  // (se você quiser mais rígido, remova este fallback)
+  m = s.replace(/\D/g, '').match(/(\d{11,})/);
+  if (m) return m[1].slice(0, 11);
+
+  return null;
+},
 
 conferirId(codigo) {
   if (!codigo) return;
 
-  const dataHora = new Date().toLocaleString();
+  const dataHora = Date.now();
 
   // ✅ Tratativa de DUPLICATAS
   if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
@@ -94,7 +114,7 @@ conferirId(codigo) {
       try {
         const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
         audio.play().catch(() => {});
-      } catch {}
+       } catch {}
     }
   }
 
@@ -137,8 +157,10 @@ conferirId(codigo) {
 
     const linhas = all.map(id => {
       const lidaEm = parseDateSafe(this.timestamps.get(id));
-      const date = lidaEm.toISOString().slice(0, 10);
-      const time = lidaEm.toTimeString().split(' ')[0];
+      const pad2 = n => String(n).padStart(2,'0');
+      const date = `${lidaEm.getFullYear()}-${pad2(lidaEm.getMonth()+1)}-${pad2(lidaEm.getDate())}`;
+      const time = `${pad2(lidaEm.getHours())}:${pad2(lidaEm.getMinutes())}:${pad2(lidaEm.getSeconds())}`;
+
       const dateUtc = lidaEm.toISOString().slice(0, 10);
       const timeUtc = lidaEm.toISOString().split('T')[1].split('.')[0];
       const dupCount = this.duplicados.get(id) ? this.duplicados.get(id) - 1 : 0;
@@ -300,9 +322,21 @@ $('#extract-btn').click(() => {
 $('#barcode-input').keypress(e => {
   if (e.which === 13) {
     ConferenciaApp.viaCsv = false;
-    ConferenciaApp.conferirId($('#barcode-input').val().trim());
+
+    const raw = $('#barcode-input').val();
+    const id = ConferenciaApp.normalizarCodigo(raw);
+
+    if (!id) {
+      $('#barcode-input').val('').focus();
+      // opcional: um bip/alerta de "inválido"
+      // ConferenciaApp.alertar('QR/Barcode lido, mas não encontrei um ID válido.');
+      return;
+    }
+
+    ConferenciaApp.conferirId(id);
   }
 });
+
 
 $('#check-csv').click(() => {
   const fileInput = document.getElementById('csv-input');
@@ -335,8 +369,8 @@ $('#check-csv').click(() => {
       const colunas = linhas[i].split(',');
       if (colunas.length <= textCol) continue;
       let campo = colunas[textCol].trim().replace(/^"|"$/g, '').replace(/""/g, '"');
-      const match = campo.match(/(4\d{10})/);
-      if (match) ConferenciaApp.conferirId(match[1]);
+      const id = ConferenciaApp.normalizarCodigo(campo);
+      if (id) ConferenciaApp.conferirId(id);
     }
 
     ConferenciaApp.viaCsv = false;
