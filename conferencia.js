@@ -1,385 +1,978 @@
-const { jsPDF } = window.jspdf;
+$(document).ready(() => {
+  const { jsPDF } = window.jspdf || {};
 
-const ConferenciaApp = {
-  timestamps: new Map(),
-  ids: new Set(),
-  conferidos: new Set(),
-  faltantes: new Set(),
-  foraDeRota: new Set(),
-  duplicados: new Map(), // <--- novos registros de duplicatas
-  totalInicial: 0,
-  routeId: '',
-  cluster: '',
-  viaCsv: false,
+  const STORAGE_KEY = 'conferencia.insucessos.routes.v1';
 
-  alertar(msg) {
-    alert(msg);
-  },
+  const ConferenciaApp = {
+    // multi-rotas
+    routes: new Map(),     // routeId -> routeObj
+    currentRouteId: null,
 
-  atualizarProgresso() {
-    const total = this.totalInicial || (this.conferidos.size + this.ids.size + this.foraDeRota.size);
-    const percentual = total ? (this.conferidos.size / total) * 100 : 0;
-    $('#progress-bar').css('width', percentual + '%').text(Math.floor(percentual) + '%');
-  },
+    // estado de leitura (scanner/manual/csv)
+    viaCsv: false,
 
-  atualizarListas() {
-    $('#conferidos-list').html(
-      `<h6>Conferidos (<span class='badge badge-success'>${this.conferidos.size}</span>)</h6>` +
-      Array.from(this.conferidos)
-        .map(id => `<li class='list-group-item list-group-item-success'>${id}</li>`)
-        .join('')
-    );
+    // ========= normaliza QR/Barcode "sujo" =========
+    normalizarCodigo(raw) {
+      if (!raw) return null;
 
-    $('#faltantes-list').html(
-      `<h6>Faltantes (<span class='badge badge-danger'>${this.ids.size}</span>)</h6>` +
-      Array.from(this.ids)
-        .map(id => `<li class='list-group-item list-group-item-danger'>${id}</li>`)
-        .join('')
-    );
+      let s = String(raw).trim().replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+      let m = s.match(/(4\d{10})/);
+      if (m) return m[1];
 
-    $('#fora-rota-list').html(
-      `<h6>Fora de Rota (<span class='badge badge-warning'>${this.foraDeRota.size}</span>)</h6>` +
-      Array.from(this.foraDeRota)
-        .map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`)
-        .join('')
-    );
+      m = s.replace(/\D/g, '').match(/(\d{11,})/);
+      if (m) return m[1].slice(0, 11);
 
-    // nova lista de duplicatas
-    $('#duplicados-list').html(
-      `<h6>Duplicados (<span class='badge badge-secondary'>${this.duplicados.size}</span>)</h6>` +
-      Array.from(this.duplicados.entries())
-        .map(([id, count]) => `<li class='list-group-item list-group-item-secondary'>${id} <span class="badge badge-dark ml-2">${count}x</span></li>`)
-        .join('')
-    );
+      return null;
+    },
 
-    $('#verified-total').text(this.conferidos.size);
-    this.atualizarProgresso();
-  },
-normalizarCodigo(raw) {
-  if (!raw) return null;
+    alertar(msg) { alert(msg); },
 
-  // Remove espaços e caracteres invisíveis / de controle
-  let s = String(raw)
-    .trim()
-    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); // controles ASCII
+    traduzirStatus(codigo) {
+      const mapa = {
+        'missrouted': 'Pacote de outra área',
+        'bad_address': 'Endereço incorreto ou incompleto',
+        'damaged': 'Avariado',
+        'buyer_absent': 'Não havia ninguém no endereço',
+        'unvisited_address': 'Endereço não visitado',
+        'business_closed': 'Negócio fechado',
+        'missing': 'Faltante',
+        'buyer_moved': 'O comprador mudou de endereço',
+        'buyer_rejected': 'Pacote recusado pelo comprador',
+        'inaccessible_address' : 'Endereço inacessível',
+        'blocked_by_keyword':'Palavra-chave incorreta',
+        'picked_up':'Coletado',
+      };
+      return mapa[codigo] || codigo;
+    },
 
-  // Alguns leitores “escapam” controles como ^...^, então tentamos extrair o ID numérico
-  // Seu padrão atual já procura (4\d{10}) em CSV; vamos reutilizar a mesma lógica aqui.
-  let m = s.match(/(4\d{10})/);
-  if (m) return m[1];
-
-  // Fallback: pega qualquer sequência de 11+ dígitos e usa os 11 primeiros
-  // (se você quiser mais rígido, remova este fallback)
-  m = s.replace(/\D/g, '').match(/(\d{11,})/);
-  if (m) return m[1].slice(0, 11);
-
-  return null;
-},
-
-conferirId(codigo) {
-  if (!codigo) return;
-
-  const dataHora = Date.now();
-
-  // ✅ Tratativa de DUPLICATAS
-  if (this.conferidos.has(codigo) || this.foraDeRota.has(codigo)) {
-    const count = this.duplicados.get(codigo) || 1;
-    this.duplicados.set(codigo, count + 1);
-    this.timestamps.set(codigo, dataHora);
-
-    // 🔊 toca som de duplicata, igual ao fora de rota
-    if (!this.viaCsv) {
-      try {
-        const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
-        audio.play().catch(() => {});
-      } catch {}
-    }
-
-    $('#barcode-input').val('').focus();
-    this.atualizarListas();
-    return;
-  }
-
-  // ✅ Pacote normal
-  if (this.ids.has(codigo)) {
-    this.ids.delete(codigo);
-    this.conferidos.add(codigo);
-    this.timestamps.set(codigo, dataHora);
-  } else {
-    // ✅ Fora de rota
-    this.foraDeRota.add(codigo);
-    this.timestamps.set(codigo, dataHora);
-
-    if (!this.viaCsv) {
-      try {
-        const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
-        audio.play().catch(() => {});
-       } catch {}
-    }
-  }
-
-  $('#barcode-input').val('').focus();
-  this.atualizarListas();
-},
-
-  gerarCsvText() {
-    const all = [...this.conferidos, ...this.foraDeRota, ...this.duplicados.keys()];
-    if (all.length === 0) {
-      alert('Nenhum ID para exportar.');
-      return;
-    }
-
-    const parseDateSafe = (value) => {
-      if (!value) return new Date();
-      if (value instanceof Date) return value;
-      if (typeof value === 'number') return new Date(value);
-      if (typeof value === 'string') {
-        if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
-          const d = new Date(value);
-          if (!isNaN(d.getTime())) return d;
-        }
-        const m = value.match(/^(\d{2})\/(\d{2})\/(\d{4})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
-        if (m) {
-          const [ , dd, mm, yyyy, HH, MM, SS = '00' ] = m;
-          const iso = `${yyyy}-${mm}-${dd}T${HH}:${MM}:${SS}`;
-          const d = new Date(iso);
-          if (!isNaN(d.getTime())) return d;
-        }
-        if (/^\d{13}$/.test(value)) return new Date(Number(value));
-        const d = new Date(value);
-        if (!isNaN(d.getTime())) return d;
+    tocarAlerta(viaCsv = false) {
+      if (!viaCsv && !document.hidden) {
+        try {
+          const audio = new Audio('mixkit-alarm-tone-996-_1_.mp3');
+          audio.play().catch(() => {});
+        } catch (e) {}
       }
-      return new Date();
-    };
+    },
 
-    const zona = 'Horário Padrão de Brasília';
-    const header = 'date,time,time_zone,format,text,notes,favorite,date_utc,time_utc,metadata,duplicates';
+    // ==========================
+    // Modelo de rota (somente insucessos/pendentes como você quer)
+    // ==========================
+    makeEmptyRoute(routeId) {
+      return {
+        routeId: String(routeId),
+        cluster: '',
+        driverName: '',
+        destinationFacilityId: '',
+        destinationFacilityName: '',
+        orhc: '-',
+        percentualDS: '0 %',
 
-    const linhas = all.map(id => {
-      const lidaEm = parseDateSafe(this.timestamps.get(id));
-      const pad2 = n => String(n).padStart(2,'0');
-      const date = `${lidaEm.getFullYear()}-${pad2(lidaEm.getMonth()+1)}-${pad2(lidaEm.getDate())}`;
-      const time = `${pad2(lidaEm.getHours())}:${pad2(lidaEm.getMinutes())}:${pad2(lidaEm.getSeconds())}`;
+        // ids = INSUCCESSOS/PENDENTES (extraídos do HTML)
+        ids: new Set(),
+        conferidos: new Set(),
+        foraDeRota: new Set(),
+        duplicados: new Map(),
+        timestamps: new Map(),
+        statusById: new Map(),
+      };
+    },
 
-      const dateUtc = lidaEm.toISOString().slice(0, 10);
-      const timeUtc = lidaEm.toISOString().split('T')[1].split('.')[0];
-      const dupCount = this.duplicados.get(id) ? this.duplicados.get(id) - 1 : 0;
+    get current() {
+      if (!this.currentRouteId) return null;
+      return this.routes.get(String(this.currentRouteId)) || null;
+    },
 
-      return `${date},${time},${zona},Code 128,${id},,0,${dateUtc},${timeUtc},,${dupCount}`;
-    });
+    // ==========================
+    // Persistência
+    // ==========================
+    saveToStorage() {
+      try {
+        const obj = {};
+        for (const [rid, r] of this.routes.entries()) {
+          obj[rid] = {
+            routeId: r.routeId,
+            cluster: r.cluster,
+            driverName: r.driverName,
+            destinationFacilityId: r.destinationFacilityId,
+            destinationFacilityName: r.destinationFacilityName,
+            orhc: r.orhc,
+            percentualDS: r.percentualDS,
 
-    const conteudo = [header, ...linhas].join('\r\n');
-    const blob = new Blob([conteudo], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
+            ids: Array.from(r.ids),
+            conferidos: Array.from(r.conferidos),
+            foraDeRota: Array.from(r.foraDeRota),
+            duplicados: Object.fromEntries(r.duplicados),
+            timestamps: Object.fromEntries(r.timestamps),
+            statusById: Object.fromEntries(r.statusById),
+          };
+        }
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+      } catch (e) {
+        console.warn('save storage fail', e);
+      }
+    },
 
-    const cluster = this.cluster || 'semCluster';
-    const rota = this.routeId || 'semRota';
-    link.download = `${cluster}_${rota}_padrao.csv`;
-    link.click();
-  },
+    loadFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
 
-  finalizar() {
-    this.gerarCsvText();
-    $('#reportModal').modal('show');
-  },
+        const parsed = JSON.parse(raw);
+        this.routes.clear();
 
-  gerarRelatorioTxt() {
-    let conteudo = '';
-    if (this.conferidos.size) conteudo += 'CONFERIDOS:\n' + Array.from(this.conferidos).join('\n') + '\n\n';
-    if (this.ids.size) conteudo += 'FALTANTES:\n' + Array.from(this.ids).join('\n') + '\n\n';
-    if (this.foraDeRota.size) conteudo += 'FORA DE ROTA:\n' + Array.from(this.foraDeRota).join('\n') + '\n\n';
-    if (this.duplicados.size)
-      conteudo += 'DUPLICADOS:\n' + Array.from(this.duplicados.entries()).map(([id, c]) => `${id} (${c}x)`).join('\n');
+        for (const [rid, data] of Object.entries(parsed || {})) {
+          const r = this.makeEmptyRoute(rid);
 
-    const blob = new Blob([conteudo], { type: 'text/plain;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'relatorio.txt';
-    link.click();
-  },
+          r.cluster = data.cluster || '';
+          r.driverName = data.driverName || '';
+          r.destinationFacilityId = data.destinationFacilityId || '';
+          r.destinationFacilityName = data.destinationFacilityName || '';
+          r.orhc = data.orhc || '-';
+          r.percentualDS = data.percentualDS || '0 %';
 
-  gerarRelatorioPdf() {
-    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    let y = 10;
-    const margemInferior = 280;
-    doc.setFontSize(16);
-    doc.text('Relatório de Conferência de Rota', 10, y);
-    y += 10;
-    doc.setFontSize(10);
+          (data.ids || []).forEach(x => r.ids.add(x));
+          (data.conferidos || []).forEach(x => r.conferidos.add(x));
+          (data.foraDeRota || []).forEach(x => r.foraDeRota.add(x));
 
-    const addSec = (titulo, cor, dados) => {
-      if (dados.size > 0) {
-        doc.setTextColor(...cor);
-        doc.text(titulo, 10, y);
-        y += 6;
-        dados.forEach((id) => {
-          if (y > margemInferior) {
-            doc.addPage();
-            y = 10;
-            doc.setFontSize(10);
-            doc.setTextColor(...cor);
-            doc.text(titulo + ' (continuação)', 10, y);
-            y += 6;
-          }
-          doc.text(id.toString(), 10, y);
-          y += 6;
+          r.duplicados = new Map(Object.entries(data.duplicados || {}).map(([k, v]) => [k, Number(v || 0)]));
+          r.timestamps = new Map(Object.entries(data.timestamps || {}));
+          r.statusById = new Map(Object.entries(data.statusById || {}));
+
+          this.routes.set(String(rid), r);
+        }
+      } catch (e) {
+        console.warn('load storage fail', e);
+      }
+    },
+
+    deleteRoute(routeId) {
+      if (!routeId) return;
+      this.routes.delete(String(routeId));
+      if (this.currentRouteId === String(routeId)) this.currentRouteId = null;
+      this.saveToStorage();
+      this.renderRoutesSelects();
+    },
+
+    clearAllRoutes() {
+      this.routes.clear();
+      this.currentRouteId = null;
+      localStorage.removeItem(STORAGE_KEY);
+      this.renderRoutesSelects();
+    },
+
+    // ==========================
+    // UI selects
+    // ==========================
+    renderRoutesSelects() {
+      const routesSorted = Array.from(this.routes.values())
+        .sort((a, b) => String(a.routeId).localeCompare(String(b.routeId)));
+
+      const makeLabel = (r) => {
+        const extras = [];
+        if (r.cluster) extras.push(`CLUSTER ${r.cluster}`);
+        if (r.destinationFacilityId) extras.push(`XPT ${r.destinationFacilityId}`);
+        return `ROTA ${r.routeId}${extras.length ? ' • ' + extras.join(' • ') : ''}`;
+      };
+
+      $('#saved-routes').html(
+        ['<option value="">(Nenhuma selecionada)</option>']
+          .concat(routesSorted.map(r => `<option value="${r.routeId}">${makeLabel(r)}</option>`))
+          .join('')
+      );
+
+      $('#saved-routes-inapp').html(routesSorted.map(r => `<option value="${r.routeId}">${makeLabel(r)}</option>`).join(''));
+
+      // fechamento diário
+      const $fdSel = $('#fd-rotas');
+      if ($fdSel.length) {
+        $fdSel.html(routesSorted.map(r => `<option value="${r.routeId}">ROTA ${r.routeId}${r.driverName ? ` — ${r.driverName}` : ''}</option>`).join(''));
+      }
+
+      if (this.currentRouteId) {
+        $('#saved-routes').val(this.currentRouteId);
+        $('#saved-routes-inapp').val(this.currentRouteId);
+      }
+    },
+
+    setCurrentRoute(routeId) {
+      const rid = String(routeId);
+      if (!this.routes.has(rid)) return this.alertar('Rota não encontrada.');
+      this.currentRouteId = rid;
+      this.renderRoutesSelects();
+      this.refreshUIFromCurrent();
+      this.saveToStorage();
+    },
+
+    refreshUIFromCurrent() {
+      const r = this.current;
+      if (!r) return;
+
+      $('#route-title').html(`ROTA: <strong>${r.routeId}</strong><br> RECEBIMENTO DE PACOTES`);
+
+      if (r.cluster) $('#cluster-title').html(`<span>CLUSTER:</span> <strong>${r.cluster}</strong>`);
+      else $('#cluster-title').html('');
+
+      if (r.destinationFacilityId) $('#destination-facility-title').html(`<strong>XPT:</strong> ${r.destinationFacilityId}`);
+      else $('#destination-facility-title').html('');
+
+      if (r.destinationFacilityName) $('#destination-facility-name').html(`<strong>DESTINO:</strong> ${r.destinationFacilityName}`);
+      else $('#destination-facility-name').html('');
+
+      $('#extracted-total').text(r.ids.size);
+      $('#verified-total').text(r.conferidos.size);
+
+      this.atualizarListas();
+    },
+
+    // ==========================
+    // Lógica de conferência (igual a tua, só que por rota)
+    // ==========================
+    registrarDuplicado(r, codigo) {
+      const atual = r.duplicados.get(codigo) || 0;
+      r.duplicados.set(codigo, atual + 1);
+    },
+
+    atualizarProgresso() {
+      const r = this.current;
+      if (!r) return;
+
+      const total = r.ids.size + r.conferidos.size + r.foraDeRota.size;
+      const porcent = total ? Math.floor((r.conferidos.size / total) * 100) : 0;
+      $('#progress-bar').css('width', `${porcent}%`).text(`${porcent}%`);
+    },
+
+    atualizarListas() {
+      const r = this.current;
+      if (!r) return;
+
+      $('#conferidos-list').html(
+        `<h6>Conferidos (<span class='badge badge-success'>${r.conferidos.size}</span>)</h6>` +
+        Array.from(r.conferidos).map(id => {
+          const info = r.timestamps.get(id) || '';
+          const manual = info.includes('(MANUAL)');
+          return `
+            <li class='list-group-item ${manual ? 'list-group-item-info' : 'list-group-item-success'}' id="id-${id}">
+              ${id}
+              ${manual ? "<span class='badge badge-secondary ml-2'>MANUAL</span>" : ""}
+            </li>`;
+        }).join('')
+      );
+
+      $('#faltantes-list').html(
+        `<h6>Pendentes (<span class='badge badge-danger'>${r.ids.size}</span>)</h6>` +
+        Array.from(r.ids).map(id => `<li class='list-group-item list-group-item-danger' id="id-${id}">${id}</li>`).join('')
+      );
+
+      $('#fora-rota-list').html(
+        `<h6>Fora de Rota (<span class='badge badge-warning'>${r.foraDeRota.size}</span>)</h6>` +
+        Array.from(r.foraDeRota).map(id => `<li class='list-group-item list-group-item-warning'>${id}</li>`).join('')
+      );
+
+      const dupHTML = Array.from(r.duplicados.entries()).map(([id, rep]) => {
+        const suf = rep > 1 ? ` x${rep}` : '';
+        return `<li class='list-group-item list-group-item-warning'>${id}${suf}</li>`;
+      }).join('');
+      $('#duplicados-list').html(
+        `<h6>Duplicados (<span class='badge badge-warning'>${r.duplicados.size}</span>)</h6>` + dupHTML
+      );
+
+      $('#verified-total').text(r.conferidos.size);
+      this.atualizarProgresso();
+      this.saveToStorage();
+    },
+
+    conferirId(codigo, origem = 'scanner') {
+      const r = this.current;
+      if (!r || !codigo) return;
+
+      const agora = new Date().toLocaleString();
+      const infoHora = origem === 'manual' ? `${agora} (MANUAL)` : `${agora} (LEITOR)`;
+
+      if (r.conferidos.has(codigo) || r.foraDeRota.has(codigo)) {
+        this.registrarDuplicado(r, codigo);
+        r.timestamps.set(codigo, infoHora);
+        this.tocarAlerta();
+        $('#barcode-input').val('').focus();
+        this.atualizarListas();
+        return;
+      }
+
+      if (r.ids.has(codigo)) {
+        r.ids.delete(codigo);
+        r.conferidos.add(codigo);
+        r.timestamps.set(codigo, infoHora);
+      } else {
+        r.foraDeRota.add(codigo);
+        r.timestamps.set(codigo, infoHora);
+        if (!this.viaCsv) this.tocarAlerta();
+      }
+
+      $('#barcode-input').val('').focus();
+      this.atualizarListas();
+    },
+
+    gerarMensagemResumo({ incluirForaDeRota = true } = {}) {
+      const r = this.current;
+      if (!r) return;
+
+      const rota = r.routeId || '(sem rota)';
+      const xptId = r.destinationFacilityId || $('#destination-facility-title').text().replace('XPT:', '').trim();
+      const destino = r.destinationFacilityName || $('#destination-facility-name').text().replace('DESTINO:', '').trim();
+      const pendentes = r.ids.size;
+      const naoVisitados = Array.from(r.ids).filter(id => r.statusById.get(id) === 'unvisited_address').length;
+      const totalInsucessos = incluirForaDeRota ? (pendentes + r.foraDeRota.size) : pendentes;
+      const motorista = r.driverName || '(não informado)';
+      const cluster = r.cluster || '(sem cluster)';
+
+      let mensagem = '';
+      mensagem += `↩ RTS - Rota: ${rota}\n`;
+      mensagem += `🏭 SVC/XPT: ${xptId || '(XPT indefinido)'}${destino ? ' - ' + destino : ''}\n`;
+      mensagem += `🎯 Metas: %DS - 99% | ORHC - 85% (não alterar)\n`;
+      mensagem += `🕗 ORHC: ${r.orhc}\n`;
+      mensagem += `🟢 %DS - Entregues: ${r.percentualDS}\n`;
+      mensagem += `🟡 Pendentes/Não Visitados: ${naoVisitados}\n`;
+      mensagem += `🔴 Insucessos: ${totalInsucessos}\n\n`;
+      mensagem += `♎ Justificativa:\n`;
+      mensagem += `Rota ${cluster}\n`;
+      mensagem += `Rodacoop | ${motorista}\n`;
+
+      mensagem += `\n\n`;
+      const idsOrdenados = Array.from(r.ids).sort((a, b) => String(a).localeCompare(String(b)));
+      if (idsOrdenados.length) {
+        idsOrdenados.forEach(id => {
+          const status = r.statusById.get(id);
+          const motivo = this.traduzirStatus(status || 'pendente');
+          mensagem += `${id}: ${motivo}\n`;
         });
-        y += 4;
+      } else {
+        mensagem += `(nenhum ID encontrado no HTML)\n`;
       }
-    };
 
-    addSec('Conferidos:', [0, 128, 0], this.conferidos);
-    addSec('Faltantes:', [255, 0, 0], this.ids);
-    addSec('Fora de Rota:', [255, 165, 0], this.foraDeRota);
-    addSec('Duplicados:', [100, 100, 100], new Map(Array.from(this.duplicados.keys()).map(id => [id, null])));
+      $('#mensagem-final').val(mensagem).removeClass('d-none');
+      $('#copy-message').removeClass('d-none');
+    },
 
-    doc.save('relatorio.pdf');
+    // ==========================
+    // Importação HTML: várias rotas (se você colar vários htmls, salva todas)
+    // ==========================
+    importRoutesFromHtml(raw) {
+      const source = String(raw || '');
+      // ORHC / ORH (robusto) - extrai do HTML inteiro e também por bloco
+      const extractOrhc = (htmlString) => {
+        try {
+          // 1) DOMParser (mais confiável)
+          const doc = new DOMParser().parseFromString(`<div id="wrap">${htmlString}</div>`, 'text/html');
+          const wrap = doc.getElementById('wrap');
+          if (wrap) {
+            // tenta achar pelo texto do card (ORH/ORHC)
+            const boxes = wrap.querySelectorAll('.metric-box, [class*="metric-box"]');
+            for (const box of boxes) {
+              const t = (box.textContent || '').toLowerCase();
+              if (t.includes('orh') || t.includes('orhc')) {
+                const p = box.querySelector('.metric-box__value p, [class*="metric-box__value"] p, p');
+                const val = (p?.textContent || '').trim();
+                const m = val.match(/(\d{1,2}:\d{2})\s*(h|H)\b/);
+                if (m) return `${m[1]} h`;
+              }
+            }
+
+            // fallback: primeiro HH:MM h dentro de metric-box__value
+            const ps = wrap.querySelectorAll('.metric-box__value p, [class*="metric-box__value"] p');
+            for (const p of ps) {
+              const val = (p.textContent || '').trim();
+              const m = val.match(/(\d{1,2}:\d{2})\s*(h|H)\b/);
+              if (m) return `${m[1]} h`;
+            }
+          }
+        } catch (e) {
+          // ignora e tenta regex abaixo
+        }
+
+        // 2) Regex tolerante (aceita &nbsp;, &#160; e <!-- -->)
+        const cleaned = String(htmlString || '')
+          .replace(/<!--[\s\S]*?-->/g, ' ')
+          .replace(/&nbsp;|&#160;/gi, ' ')
+          .replace(/\s+/g, ' ');
+
+        const m =
+          cleaned.match(/<div\s+class="metric-box__value"[^>]*>\s*<p[^>]*>\s*(\d{1,2}:\d{2})\s*(?:h|H)\s*<\/p>/i) ||
+          cleaned.match(/(\d{1,2}:\d{2})\s*(?:h|H)\b/i);
+
+        return m ? `${m[1]} h` : null;
+      };
+
+      const globalOrh = extractOrhc(source);
+
+
+      // tenta quebrar em blocos por routeId
+      const idxs = [];
+      for (const m of source.matchAll(/"routeId":\s*(\d+)/g)) idxs.push(m.index);
+      if (!idxs.length) {
+        this.alertar('Não encontrei nenhum "routeId" no HTML.');
+        return 0;
+      }
+
+      const blocks = [];
+// ⚠️ Importante: em alguns HTMLs, as métricas (ORH/ORHC) aparecem ANTES do `"routeId"`.
+// Então, para cada routeId, pegamos também um "lookback" para trás (ancorando em metric-box__value quando possível).
+const LOOKBACK_MAX = 12000; // caracteres
+for (let i = 0; i < idxs.length; i++) {
+  const ridx = idxs[i];
+  const next = (i + 1 < idxs.length) ? idxs[i + 1] : source.length;
+
+  // tenta ancorar o início no último metric-box__value antes do routeId (se estiver perto)
+  let start = ridx;
+  const anchor = source.lastIndexOf('metric-box__value', ridx);
+  if (anchor !== -1 && (ridx - anchor) <= LOOKBACK_MAX) {
+    start = anchor;
+  } else {
+    start = Math.max(0, ridx - LOOKBACK_MAX);
   }
-};
 
-// ================== EVENTOS ==================
+  // garante que não "invada" demais o bloco anterior: não deixa start ser menor que o routeId anterior
+  if (i > 0) start = Math.max(start, idxs[i - 1]);
 
-$('#manual-btn').click(() => {
-  $('#initial-interface').addClass('d-none');
-  $('#manual-interface').removeClass('d-none');
-});
+  const end = next;
+  blocks.push(source.slice(start, end));
+}
 
-$('#submit-manual').click(() => {
-  try {
-    let manualIds = $('#manual-input').val().split(/[\s,]+/).map(id => id.trim());
-    manualIds.forEach(id => {
-      if (id) ConferenciaApp.ids.add(id);
+      let imported = 0;
+
+      for (const blockRaw of blocks) {
+        // seu código atual “limpa tags” pra facilitar regex
+        let html = blockRaw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+        const routeMatch = /"routeId":\s*(\d+)/.exec(html);
+        if (!routeMatch) continue;
+
+        const routeId = String(routeMatch[1]);
+        const r = this.routes.get(routeId) || this.makeEmptyRoute(routeId);
+
+
+        const orhc = extractOrhc(blockRaw) || globalOrh;
+        r.orhc = orhc ? orhc : (r.orhc || '-');
+
+        let dsMatch = /<div class="chart-details-data__value-item">([\d.,]+)\s*<!-- -->\s*%<\/div>/i.exec(blockRaw);
+        if (!dsMatch) dsMatch = /([\d.,]+)\s*%/i.exec(blockRaw);
+        r.percentualDS = dsMatch ? `${dsMatch[1]} %` : (r.percentualDS || '0 %');
+
+        // cluster, destino, motorista
+        const clusterMatch = /"cluster":"([^"]+)"/.exec(html);
+        if (clusterMatch) r.cluster = clusterMatch[1];
+
+        const facMatch = /"destinationFacilityId":"([^"]+)","name":"([^"]+)"/.exec(html);
+        if (facMatch) {
+          r.destinationFacilityId = facMatch[1];
+          r.destinationFacilityName = facMatch[2];
+        }
+
+        const driverMatch = /"driverName":"([^"]+)"/.exec(html);
+        if (driverMatch) r.driverName = driverMatch[1];
+
+        // zera conjuntos dessa rota (reimport substitui)
+        r.ids.clear();
+        r.conferidos.clear();
+        r.foraDeRota.clear();
+        r.duplicados.clear();
+        r.timestamps.clear();
+        r.statusById.clear();
+
+        // ===== SEU PADRÃO: extrai IDs e substatus, guardando só o que NÃO é delivered/transferred
+        const matches = [...html.matchAll(
+          /"id":(4\d{10}).*?"substatus":\s*(null|"([^"]*)")/g
+        )];
+
+        const idsPendentes = [];
+        for (const m of matches) {
+          const id = m[1];
+          const sub = (m[2] === 'null' || m[2] == null) ? null : (m[3] || '').trim();
+
+          r.statusById.set(id, sub);
+
+          if (sub !== 'delivered' && sub !== 'transferred') {
+            idsPendentes.push(id);
+          }
+        }
+
+        if (!idsPendentes.length) continue;
+        idsPendentes.forEach(id => r.ids.add(id));
+
+        this.routes.set(routeId, r);
+        imported++;
+      }
+
+      this.saveToStorage();
+      this.renderRoutesSelects();
+      return imported;
+    },
+
+    // ==========================
+    // XLSX: exporta rota atual (igual o seu, só lendo da rota atual)
+    // ==========================
+    exportXlsxRotaAtual() {
+      const r = this.current;
+      if (!r) return this.alertar('Selecione uma rota.');
+
+      if (typeof XLSX === 'undefined') {
+        return this.alertar('Biblioteca XLSX não carregada.');
+      }
+
+      const ws_data = [['ID', 'Status', 'Situação', 'Horário conferência']];
+
+      r.conferidos.forEach(id => {
+        ws_data.push([
+          id,
+          this.traduzirStatus(r.statusById.get(id) || 'pendente'),
+          'Recebido',
+          r.timestamps.get(id) || ''
+        ]);
+      });
+
+      r.ids.forEach(id => {
+        ws_data.push([
+          id,
+          this.traduzirStatus(r.statusById.get(id) || 'pendente'),
+          'Pendente',
+          ''
+        ]);
+      });
+
+      r.foraDeRota.forEach(id => {
+        ws_data.push([
+          id,
+          'Fora de rota',
+          'Fora de rota',
+          r.timestamps.get(id) || ''
+        ]);
+      });
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(ws_data);
+      XLSX.utils.book_append_sheet(wb, ws, 'Conferencia');
+
+      const nomeArquivo = `Conferencia_Rota_${r.routeId || 'sem_rota'}.xlsx`;
+      XLSX.writeFile(wb, nomeArquivo);
+    },
+
+    // ==========================
+    // FECHAMENTO DIÁRIO
+    // ==========================
+    initFechamentoUI() {
+      // data padrão (hoje)
+      const $data = $('#fd-data');
+      if ($data.length && !$data.val()) {
+        const now = new Date();
+        const pad2 = (n) => String(n).padStart(2, '0');
+        $data.val(`${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`);
+      }
+    },
+
+    getSelectedFechamentoRouteIds() {
+      const sel = document.getElementById('fd-rotas');
+      if (!sel) return [];
+      return Array.from(sel.selectedOptions || []).map(o => String(o.value)).filter(Boolean);
+    },
+
+    rebuildFechamentoRouteTable() {
+      const ids = this.getSelectedFechamentoRouteIds();
+      const $tbody = $('#fd-rotas-tbody');
+      if (!$tbody.length) return;
+
+      const rows = [];
+      for (const rid of ids) {
+        const r = this.routes.get(String(rid));
+        if (!r) continue;
+        rows.push(`
+          <tr data-routeid="${r.routeId}">
+            <td><strong>Rota ${r.routeId}</strong><br><small class="text-muted">${r.cluster || ''}</small></td>
+            <td>${r.driverName || '<span class="text-muted">—</span>'}</td>
+            <td style="width:140px">
+              <input type="number" class="form-control form-control-sm fd-insucesso-rota" min="0" value="${r.ids.size}">
+            </td>
+          </tr>
+        `);
+      }
+
+      $tbody.html(rows.join(''));
+      this.recalcFechamentoTotals();
+    },
+
+    recalcFechamentoTotals() {
+      let totalInsucessos = 0;
+
+      $('#fd-rotas-tbody tr').each(function () {
+        const v = Number($(this).find('.fd-insucesso-rota').val() || 0);
+        totalInsucessos += isFinite(v) ? v : 0;
+      });
+
+      $('#fd-total-insucessos').val(totalInsucessos);
+
+      // sugere Total de Pacotes = totalInsucessos (como seu cenário é só insucesso por rota)
+      const $tp = $('#fd-total-pacotes');
+      if ($tp.length && ($tp.val() === '' || Number($tp.val()) === 0)) {
+        $tp.val(totalInsucessos);
+      }
+
+      // pendentes sugere = totalInsucessos se vazio
+      const $pend = $('#fd-pendentes');
+      if ($pend.length && ($pend.val() === '' || Number($pend.val()) === 0)) {
+        $pend.val(totalInsucessos);
+      }
+    },
+
+    preencherSugestoesFechamento() {
+      // se rodacoop vazio, sugere soma das rotas selecionadas (insuccessos extraídos)
+      const ids = this.getSelectedFechamentoRouteIds();
+      let soma = 0;
+      for (const rid of ids) {
+        const r = this.routes.get(String(rid));
+        if (r) soma += r.ids.size;
+      }
+
+      const $rodacoop = $('#fd-rodacoop');
+      if ($rodacoop.length && ($rodacoop.val() === '' || Number($rodacoop.val()) === 0)) {
+        $rodacoop.val(soma);
+      }
+
+      this.recalcFechamentoTotals();
+    },
+
+  gerarMensagemFechamento() {
+  const getV = (id) => String($(`#${id}`).val() ?? '').trim();
+
+  const dataISO = getV('fd-data');
+  const base = getV('fd-base') || '';
+  const ciclo = getV('fd-ciclo') || 'AM';
+
+  const fmtDataBR = (iso) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+    if (!m) return iso || '';
+    return `${m[3]}/${m[2]}/${m[1]}`;
+  };
+
+  const solicitados = getV('fd-solicitados');
+  const carregados = getV('fd-carregados');
+  const rodacoop = getV('fd-rodacoop');
+  const noshow = getV('fd-noshow');
+  const backups = getV('fd-backups');
+  const ambulancia = getV('fd-ambulancia');
+
+  const performance = getV('fd-performance');
+  const pendentes = getV('fd-pendentes');
+  const insucessosGeral = getV('fd-insucessos');
+  const reclamacao = getV('fd-reclamacao');
+
+  const totalPacotes = getV('fd-total-pacotes');
+  const totalInsucessos = getV('fd-total-insucessos');
+
+  // ====== Blocos por rota no formato que você pediu ======
+  const blocosRotas = [];
+  const selectedRouteIds = this.getSelectedFechamentoRouteIds();
+
+  for (const rid of selectedRouteIds) {
+    const r = this.routes.get(String(rid));
+    if (!r) continue;
+
+    // prioridade: cluster (ex: J20_AM7) -> senão routeId
+    const rotaLabel = (r.cluster && r.cluster.trim()) ? r.cluster.trim() : r.routeId;
+
+    // motorista
+    const motorista = (r.driverName && r.driverName.trim()) ? r.driverName.trim() : '(não informado)';
+
+    // lista de IDs pendentes/insucesso desta rota com motivo (substatus traduzido)
+    const idsOrdenados = Array.from(r.ids).sort((a, b) => String(a).localeCompare(String(b)));
+
+    const linhasIds = idsOrdenados.map(id => {
+      const sub = r.statusById.get(id); // pode ser null
+      const motivo = this.traduzirStatus(sub || 'pendente');
+      return `${id}: ${motivo}`;
     });
 
-    if (ConferenciaApp.ids.size === 0) {
-      alert('Nenhum ID válido inserido.');
-      return;
-    }
+    const bloco =
+`♎ Justificativa:
+Rota ${rotaLabel}
+Rodacoop | ${motorista}
 
-    ConferenciaApp.totalInicial = ConferenciaApp.ids.size;
-    $('#total-extracted').text(ConferenciaApp.ids.size);
+${linhasIds.length ? linhasIds.join('\n') : '(sem IDs de insucesso)'}
+`.trim();
+
+    blocosRotas.push(bloco);
+  }
+
+  const msg =
+`RELATÓRIO RODACOOP ${base} 🚀
+${fmtDataBR(dataISO)} - Data do dia do fechamento
+————————————————————
+Ciclo ${ciclo}
+Base: ${base}  RODACOOP
+————————————————————
+SOLICITADOS: ${solicitados}
+CARREGADOS: ${carregados}
+RODACOOP: ${rodacoop}
+NOSHOW: ${noshow}
+BACKUPS: ${backups}
+AMBULÂNCIA: ${ambulancia}
+
+PERFORMANCE: ${performance}
+PENDENTES : ${pendentes}
+INSUCESSOS: ${insucessosGeral}
+RECLAMAÇÃO: ${reclamacao}
+
+Total de Pacotes: ${totalPacotes}
+Total de Insucessos: ${totalInsucessos}
+
+${blocosRotas.join('\n\n')}
+`.trim();
+
+  $('#fd-output').val(msg);
+  },
+
+
+    copiarFechamento() {
+      const text = ($('#fd-output').val() || '').trim();
+      if (!text) return alert('Gere a mensagem antes.');
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => alert('Mensagem copiada!')).catch(() => {
+          const ta = document.getElementById('fd-output');
+          ta.select();
+          document.execCommand('copy');
+          alert('Mensagem copiada!');
+        });
+      } else {
+        const ta = document.getElementById('fd-output');
+        ta.select();
+        document.execCommand('copy');
+        alert('Mensagem copiada!');
+      }
+    }
+  };
+
+  // ==========================
+  // INIT
+  // ==========================
+  ConferenciaApp.loadFromStorage();
+  ConferenciaApp.renderRoutesSelects();
+
+  // ==========================
+  // BOTÕES / EVENTOS
+  // ==========================
+
+  // importar/salvar do HTML (várias rotas)
+  $('#extract-btn').click(() => {
+    const raw = $('#html-input').val() || '';
+    if (!raw.trim()) return ConferenciaApp.alertar('Cole o HTML antes.');
+
+    const qtd = ConferenciaApp.importRoutesFromHtml(raw);
+    if (!qtd) return ConferenciaApp.alertar('Nenhuma rota importada (ou sem IDs pendentes).');
+
+    ConferenciaApp.alertar(`${qtd} rota(s) importada(s) e salva(s)! Selecione uma rota e clique em “Carregar rota”.`);
+    $('#html-input').val('');
+  });
+
+  // carregar rota selecionada
+  $('#load-route').click(() => {
+    const id = $('#saved-routes').val();
+    if (!id) return ConferenciaApp.alertar('Selecione uma rota salva.');
+    ConferenciaApp.setCurrentRoute(id);
+
+    $('#initial-interface').addClass('d-none');
     $('#manual-interface').addClass('d-none');
     $('#conference-interface').removeClass('d-none');
-    ConferenciaApp.atualizarListas();
-  } catch (error) {
-    alert('Erro ao processar IDs manuais.');
-    console.error(error);
-  }
-});
-
-$('#extract-btn').click(() => {
-  let html = $('#html-input').val().replace(/<[^>]+>/g, ' ');
-  ConferenciaApp.ids.clear();
-
-  // 🔎 Pega o shipment "id" e o "receiver_id" no mesmo bloco
-  const regexEnvio = /"id":(4\d{10})[\s\S]*?"receiver_id":"([^"]+)"/g;
-  let match;
-  while ((match = regexEnvio.exec(html)) !== null) {
-    const shipmentId = match[1];
-    const receiverId = match[2];
-
-    // ✅ Só adiciona se NÃO for place (receiverId sem "_")
-    if (!receiverId.includes('_')) {
-      ConferenciaApp.ids.add(shipmentId);
-    }
-  }
-
-  // === resto do seu código permanece igual ===
-
-  const routeMatch = /"routeId":(\d+)/.exec(html);
-  if (routeMatch) {
-    ConferenciaApp.routeId = routeMatch[1];
-    $('#route-title').text(`Conferência da rota: ${ConferenciaApp.routeId}`);
-  }
-
-  const regexFacility = /"destinationFacilityId":"([^"]+)","name":"([^"]+)"/;
-  const facMatch = regexFacility.exec(html);
-  if (facMatch) {
-    ConferenciaApp.destinationFacilityId = facMatch[1];
-    ConferenciaApp.destinationFacilityName = facMatch[2];
-    $('#destination-facility-title').html(`<strong>XPT:</strong> ${facMatch[1]}`);
-    $('#destination-facility-name').html(`<strong>DESTINO:</strong> ${facMatch[2]}`);
-  }
-
-  ConferenciaApp.totalInicial = ConferenciaApp.ids.size;
-
-  $('#route-title').html(`ROTA: <strong>${ConferenciaApp.routeId}</strong>`);
-  $('#extracted-total').text(ConferenciaApp.ids.size);
-  $('#initial-interface').addClass('d-none');
-  $('#conference-interface').removeClass('d-none');
-  ConferenciaApp.atualizarListas();
-
-  const regexCluster = /"cluster":"([^"]+)"/g;
-  const clusters = [...html.matchAll(regexCluster)].map(m => m[1]);
-  if (clusters.length) {
-    ConferenciaApp.cluster = clusters[0];
-    $('#cluster-title').html(`CLUSTER: <strong>${clusters[0]}</strong>`);
-  }
-});
-
-
-$('#barcode-input').keypress(e => {
-  if (e.which === 13) {
-    ConferenciaApp.viaCsv = false;
-
-    const raw = $('#barcode-input').val();
-    const id = ConferenciaApp.normalizarCodigo(raw);
-
-    if (!id) {
-      $('#barcode-input').val('').focus();
-      // opcional: um bip/alerta de "inválido"
-      // ConferenciaApp.alertar('QR/Barcode lido, mas não encontrei um ID válido.');
-      return;
-    }
-
-    ConferenciaApp.conferirId(id);
-  }
-});
-
-
-$('#check-csv').click(() => {
-  const fileInput = document.getElementById('csv-input');
-  if (fileInput.files.length === 0) {
-    ConferenciaApp.alertar('Selecione um arquivo CSV.');
-    return;
-  }
-
-  ConferenciaApp.viaCsv = true;
-  const file = fileInput.files[0];
-  const reader = new FileReader();
-
-  reader.onload = e => {
-    const csvText = e.target.result;
-    const linhas = csvText.split(/\r?\n/);
-    if (!linhas.length) {
-      ConferenciaApp.alertar('Arquivo CSV vazio.');
-      return;
-    }
-
-    const header = linhas[0].split(',');
-    const textCol = header.findIndex(h => /(text|texto|id)/i.test(h));
-    if (textCol === -1) {
-      ConferenciaApp.alertar('Coluna apropriada não encontrada (text/texto/id).');
-      return;
-    }
-
-    for (let i = 1; i < linhas.length; i++) {
-      if (!linhas[i].trim()) continue;
-      const colunas = linhas[i].split(',');
-      if (colunas.length <= textCol) continue;
-      let campo = colunas[textCol].trim().replace(/^"|"$/g, '').replace(/""/g, '"');
-      const id = ConferenciaApp.normalizarCodigo(campo);
-      if (id) ConferenciaApp.conferirId(id);
-    }
-
-    ConferenciaApp.viaCsv = false;
     $('#barcode-input').focus();
-  };
-  reader.readAsText(file, 'UTF-8');
-});
+  });
 
-$('#finish-btn').click(() => ConferenciaApp.finalizar());
-$('#back-btn').click(() => location.reload());
-$('#export-txt').click(() => ConferenciaApp.gerarRelatorioTxt());
-$('#export-pdf').click(() => ConferenciaApp.gerarRelatorioPdf());
+  // trocar rota dentro da conferência
+  $('#switch-route').click(() => {
+    const id = $('#saved-routes-inapp').val();
+    if (!id) return;
+    ConferenciaApp.setCurrentRoute(id);
+    $('#barcode-input').focus();
+  });
+
+  $('#delete-route').click(() => {
+    const id = $('#saved-routes').val();
+    if (!id) return ConferenciaApp.alertar('Selecione uma rota para excluir.');
+    ConferenciaApp.deleteRoute(id);
+  });
+
+  $('#clear-all-routes').click(() => {
+    ConferenciaApp.clearAllRoutes();
+    ConferenciaApp.alertar('Todas as rotas foram removidas.');
+  });
+
+  // manual
+  $('#manual-btn').click(() => {
+    $('#initial-interface').addClass('d-none');
+    $('#manual-interface').removeClass('d-none');
+  });
+
+  $('#submit-manual').click(() => {
+    const r = ConferenciaApp.current;
+    if (!r) return ConferenciaApp.alertar('Carregue uma rota antes (ou importe do HTML e carregue).');
+
+    const manualIds = ($('#manual-input').val() || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+    if (!manualIds.length) return ConferenciaApp.alertar('Nenhum ID válido.');
+
+    manualIds.forEach(id => r.ids.add(id));
+    ConferenciaApp.saveToStorage();
+    ConferenciaApp.refreshUIFromCurrent();
+
+    $('#manual-interface').addClass('d-none');
+    $('#conference-interface').removeClass('d-none');
+  });
+
+  // CSV
+  $('#check-csv').click(() => {
+    const r = ConferenciaApp.current;
+    if (!r) return ConferenciaApp.alertar('Selecione uma rota antes.');
+
+    const file = $('#csv-input')[0].files[0];
+    if (!file) return ConferenciaApp.alertar('Selecione um arquivo CSV primeiro.');
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const csvData = e.target.result.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+      let totalLidas = 0;
+
+      ConferenciaApp.viaCsv = true;
+      csvData.forEach(line => {
+        const id = ConferenciaApp.normalizarCodigo(line);
+        if (id) {
+          totalLidas++;
+          ConferenciaApp.conferirId(id, 'scanner');
+        }
+      });
+
+      ConferenciaApp.viaCsv = false;
+      ConferenciaApp.alertar(`Conferência via CSV concluída. ${totalLidas} linhas processadas.`);
+    };
+    reader.readAsText(file, 'utf-8');
+  });
+
+  // export xlsx (rota atual)
+  $('#export-xlsx').click(() => {
+    ConferenciaApp.exportXlsxRotaAtual();
+  });
+
+  // mensagem atual (rota atual)
+  $('#generate-message').click(() => {
+    ConferenciaApp.gerarMensagemResumo({ incluirForaDeRota: true });
+  });
+
+  $('#copy-message').click(() => {
+    const txt = $('#mensagem-final').val();
+    if (!txt) return;
+    navigator.clipboard.writeText(txt).catch(() => {
+      $('#mensagem-final')[0].select();
+      document.execCommand('copy');
+    });
+  });
+
+  // voltar
+  $('#back-btn').click(() => {
+    $('#conference-interface').addClass('d-none');
+    $('#initial-interface').removeClass('d-none');
+    $('#html-input, #csv-input, #barcode-input').val('');
+    $('#progress-bar').css('width', '0%').text('0%');
+
+    $('#mensagem-final').val('').addClass('d-none');
+    $('#copy-message').addClass('d-none');
+
+    const el = document.getElementById('input-origin');
+    if (el) el.textContent = '—';
+  });
+
+  // ========= detectar MANUAL vs LEITOR =========
+  let scanBuffer = '';
+  let lastKeyTime = 0;
+  let origemEntrada = 'manual';
+  const SCAN_THRESHOLD = 60;
+
+  function atualizarOrigemUI(origem) {
+    const el = document.getElementById('input-origin');
+    if (!el) return;
+    el.textContent = (origem === 'scanner') ? 'LEITOR' : 'MANUAL';
+  }
+
+  $('#barcode-input').on('keydown', (e) => {
+    const now = Date.now();
+    const diff = now - lastKeyTime;
+    lastKeyTime = now;
+
+    if (diff < SCAN_THRESHOLD) {
+      origemEntrada = 'scanner';
+    } else {
+      origemEntrada = 'manual';
+      scanBuffer = '';
+    }
+
+    atualizarOrigemUI(origemEntrada);
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      ConferenciaApp.viaCsv = false;
+
+      const raw = (origemEntrada === 'scanner') ? scanBuffer : $('#barcode-input').val();
+      const id = ConferenciaApp.normalizarCodigo(raw);
+
+      if (id) ConferenciaApp.conferirId(id, origemEntrada);
+
+      scanBuffer = '';
+      origemEntrada = 'manual';
+      atualizarOrigemUI(origemEntrada);
+      $('#barcode-input').val('').focus();
+      return;
+    }
+
+    if (e.key && e.key.length === 1) {
+      scanBuffer += e.key;
+    }
+  });
+
+  // ==========================
+  // FECHAMENTO DIÁRIO: abrir/voltar/gerar/copiar
+  // ==========================
+  $('#fechamento-btn').click(() => {
+    $('#initial-interface').addClass('d-none');
+    $('#manual-interface').addClass('d-none');
+    $('#conference-interface').addClass('d-none');
+    $('#fechamento-interface').removeClass('d-none');
+
+    ConferenciaApp.initFechamentoUI();
+    ConferenciaApp.rebuildFechamentoRouteTable();
+  });
+
+  $('#fd-voltar').click(() => {
+    $('#fechamento-interface').addClass('d-none');
+    $('#initial-interface').removeClass('d-none');
+  });
+
+  $('#fd-rotas').on('change', () => {
+    ConferenciaApp.rebuildFechamentoRouteTable();
+  });
+
+  $('#fd-selecionar-todas').click(() => {
+    const sel = document.getElementById('fd-rotas');
+    if (!sel) return;
+    for (const opt of Array.from(sel.options)) opt.selected = true;
+    ConferenciaApp.rebuildFechamentoRouteTable();
+  });
+
+  $('#fd-preencher-sugestoes').click(() => {
+    ConferenciaApp.preencherSugestoesFechamento();
+  });
+
+  $(document).on('input', '.fd-insucesso-rota', () => {
+    ConferenciaApp.recalcFechamentoTotals();
+  });
+
+  $('#fd-gerar').click(() => {
+    ConferenciaApp.recalcFechamentoTotals();
+    ConferenciaApp.gerarMensagemFechamento();
+  });
+
+  $('#fd-copiar').click(() => {
+    ConferenciaApp.copiarFechamento();
+  });
+});
