@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Conferência de Rota</title>
-  <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.0.0/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="https://onildopr.github.io/rodacoop.ui/css/rodacoop.css">
   <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js"></script>
@@ -12,14 +12,24 @@
   <style>
     .bg-success-flash { background-color: #d4edda !important; }
     .bg-danger-flash { background-color: #f8d7da !important; }
-    .d-none { display: none !important; }
     .list-section { max-height: 400px; overflow-y: auto; }
-    
+
+    #gate { max-width: 360px; margin: 15vh auto 0; }
   </style>
 </head>
 <body class="rk-scope">
 
-<div class="container pt-4" id="html">
+<!-- Tela de acesso: pedida a cada carregamento da página -->
+<div id="gate" class="container text-center">
+  <h2 class="brand-title mb-3">Conferência de Rota</h2>
+  <form id="gate-form" autocomplete="off">
+    <input type="password" id="gate-input" class="form-control mb-2" placeholder="Senha de acesso" autofocus>
+    <div id="gate-erro" class="text-danger small mb-2 d-none">Senha incorreta.</div>
+    <button type="submit" class="btn btn-primary">Entrar</button>
+  </form>
+</div>
+
+<div class="container pt-4 d-none" id="html">
   <div class="row">
     <div class="col-sm-2"></div>
     <div class="col-sm-8">
@@ -51,7 +61,7 @@
             <div id="progress-bar" class="progress-bar" role="progressbar" style="width: 0%"></div>
           </div>
         </div>
-        <input type="text" id="barcode-input" class="form-control" placeholder="Leia ou digite o código de barras" autofocus>
+        <input type="text" id="barcode-input" class="form-control" placeholder="Leia ou digite o código de barras">
 
         <div class="row text-center mt-4">
           <div class="col-md-3">
@@ -95,8 +105,29 @@
   </div>
 </div>
 
+<!-- Modal de relatórios (aberto ao finalizar) -->
+<div class="modal fade" id="reportModal" tabindex="-1" role="dialog" aria-labelledby="reportModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="reportModalLabel">Conferência finalizada</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Fechar">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-0">O CSV padrão foi baixado. Gere também o relatório:</p>
+      </div>
+      <div class="modal-footer">
+        <button id="export-txt" class="btn btn-secondary">Relatório TXT</button>
+        <button id="export-pdf" class="btn btn-primary">Relatório PDF</button>
+      </div>
+    </div>
+  </div>
+</div>
 
-<script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.0.0/dist/js/bootstrap.min.js"></script>
 <script src="conferencia.js" defer></script> <!-- Novo script separado -->
 
 
